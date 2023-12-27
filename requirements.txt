@@ -1,0 +1,8 @@
+# 不需要安装peft,因为项目为了兼容性自带了peft源码了
+transformers==4.35.0
+torch
+sentencepiece==0.1.99
+bitsandbytes==0.41.1
+datasets==2.15
+deepspeed
+pytest==7.4.0
