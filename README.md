@@ -16,6 +16,9 @@
   
 </p>
 
+### News置顶
+- 🔥 更新vllm部署脚本（改进：一次部署langchain和openai均可使用）
+
 ### 背景
 由于项目需要，整理出llama模型的微调代码，并发布以备份。代码参考来源是[Chinese-LLaMA-Alpaca-2](https://github.com/ymcui/Chinese-LLaMA-Alpaca-2)，主要是将：微调数据tokenizer为arrow数据的逻辑部分独立出来了，解绑数据准备与微调步骤。修改了部分代码。增加了一些注释
 
