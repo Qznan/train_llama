@@ -2,8 +2,8 @@
 # root_path=/disk0/fin_group/zyn
 root_path=.
 
-lr=3e-5  # full_finetuning
-lr=1e-4  # lora
+lr=5e-5  # full_finetuning
+# lr=1e-4  # lora
 lora_rank=64
 lora_alpha=128
 lora_trainable="q_proj,v_proj,k_proj,o_proj,gate_proj,down_proj,up_proj"
@@ -15,7 +15,7 @@ pretrained_model=${root_path}/pretrained_models/llama-2-tiny-testing
 
 chinese_tokenizer_path=tokenizer_chinese_llama  # chinese-llama原生词表 5w
 
-dataset_dir=${root_path}/instr_data/0111/merge_arrow_data  # 这里修改原代码，指定pre_tokenizer_inst生成的arrow文件目录
+dataset_dir=${root_path}/pt_data/0111/merge_arrow_data  # 这里修改原代码，指定pre_tokenizer_inst生成的arrow文件目录
 
 
 per_device_train_batch_size=1
@@ -23,17 +23,17 @@ per_device_eval_batch_size=1
 gradient_accumulation_steps=8
 
 # 以下在pre_tokenizer_inst时已经指定，这里无需管，不起作用
-max_seq_length=1024
+block_size=1024
 validation_split_percentage=0.1
 validation_file=validation_file_name  # 在pre_tokenizer_inst时已经切分训练测试在arrow文件，这里无需管理
 # =====
 
-output_dir=${root_path}/saved_models/1218_3gpu_zero2_test
+output_dir=${root_path}/saved_models/pt_test0111_1
 
 deepspeed_config_file=ds_zero2_no_offload.json
 # deepspeed_config_file=ds_zero3_no_offload.json  # 使用zero3的话需要在保持的ckpt目录中运行例如python zero_to_fp32.py checkpoint-126 final_model.bin才能得到训练后的文件
 
-# run_name=tmp  #wandb的run名字
+#run_name=tmp  #wandb的run名字
 report_to=none  # 不记录到wandb
 #report_to=wandb  # 记录到wandb
 
@@ -41,7 +41,7 @@ report_to=none  # 不记录到wandb
 
 CUDA_VISIBLE_DEVICES=2,3 \
 torchrun --standalone --nnodes 1 --nproc-per-node 2 \
-run_clm_sft_with_peft2.py \
+run_clm_pt_with_peft2.py \
     --deepspeed ${deepspeed_config_file} \
     --full_finetuning \
     --model_name_or_path ${pretrained_model} \
@@ -54,7 +54,7 @@ run_clm_sft_with_peft2.py \
     --do_eval \
     --seed 1234 \
     --fp16 \
-    --num_train_epochs 1 \
+    --num_train_epochs 20 \
     --lr_scheduler_type cosine \
     --learning_rate ${lr} \
     --warmup_ratio 0.03 \
@@ -68,7 +68,7 @@ run_clm_sft_with_peft2.py \
     --save_steps 200 \
     --gradient_accumulation_steps ${gradient_accumulation_steps} \
     --preprocessing_num_workers 8 \
-    --max_seq_length ${max_seq_length} \
+    --block_size ${block_size} \
     --output_dir ${output_dir} \
     --overwrite_output_dir \
     --ddp_timeout 30000 \
@@ -83,6 +83,7 @@ run_clm_sft_with_peft2.py \
     --save_safetensors False \
     --gradient_checkpointing \
     --ddp_find_unused_parameters False \
-    --report_to ${report_to}
+    --report_to ${report_to} \
+    --run_name ${run_name}
 
     # --modules_to_save ${modules_to_save} \

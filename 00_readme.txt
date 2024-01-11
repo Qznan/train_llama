@@ -14,7 +14,7 @@ lora微调说明
         tokenizer主要函数，参数由files,处理完的数据保存目录名arrow_data1219,所采用的分词器tokenizer_chinese_llama,处理中间过程数据的保存路径instr_data/1219/cache，
         最终会生成instr_data/1219/arrow_data1219文件目录
 
-2、运行01_run_sft脚本
+2、
     1、01_run_sft.sh中指定dataset_dir参数为上一步的/instr_data/1219/arrow_data1219目录。并保持chinese_tokenizer_path参数与上一步所采用的的分词器相同。
     2、其余常见修改包括使用单机几卡的GPU。在CUDA_VISIBLE_DEVICES=0,1,2中设置，这个例子使用3卡，故nproc-per-node也要一并修改为3
     3、设置模型保存输出路径output_dir

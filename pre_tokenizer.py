@@ -2,11 +2,18 @@ import logging
 from pathlib import Path
 from typing import *
 import os, argparse, sys
+from itertools import chain
 import datasets
 from datasets import load_dataset, concatenate_datasets
 import transformers
-from transformers import LlamaTokenizer, AutoTokenizer
-import torch
+from transformers import (
+    AutoConfig,
+    AutoModelForCausalLM,
+    LlamaForCausalLM,
+    LlamaTokenizer,
+    AutoTokenizer,
+)
+from transformers.testing_utils import CaptureLogger
 
 logger = logging.getLogger(__name__)
 
@@ -22,48 +29,35 @@ transformers.utils.logging.set_verbosity(log_level)
 
 tok_logger = transformers.utils.logging.get_logger("transformers.tokenization_utils_base")
 
-IGNORE_INDEX = -100
-PROMPT_TEMPLATE = (
-    "[INST] <<SYS>>\n"
-    "You are a helpful assistant. 你是一个乐于助人的助手。\n"
-    "<</SYS>>\n\n{instruction} [/INST]"
-)
-
 
 def tokenize_function(examples):
-    sources = []
-    targets = []
-    prompt = PROMPT_TEMPLATE
-    for instruction, input, output in zip(examples['instruction'], examples['input'], examples['output']):
-        if input is not None and input != "":
-            instruction = instruction + '\n' + input
-        source = prompt.format_map({'instruction': instruction})
-        target = f"{output}{tokenizer.eos_token}"  # 这里加了eos即</s>
+    with CaptureLogger(tok_logger) as cl:
+        output = tokenizer(examples["text"])  # 因为add_eos_token=True,所以将会增加sos和eos即 <s>  </s>给每行句子
+    # clm input could be much much longer than block_size
+    if "Token indices sequence length is longer than the" in cl.out:
+        tok_logger.warning(
+            "^^^^^^^^^^^^^^^^ Please ignore the warning above - this long input will be chunked into smaller bits"
+            " before being passed to the model."
+        )
+    return output
 
-        sources.append(source)
-        targets.append(target)
 
-    tokenized_sources = tokenizer(sources, return_attention_mask=False)  # 句头加bos即<s>
-    tokenized_targets = tokenizer(targets, return_attention_mask=False, add_special_tokens=False)  # 句头不加bos即<s>
-    # 因为是分开来token所以target前面都是以▁A 相当于空格开头[/INST] A
-    # 其实最终是相当于sources和targets加了空格去拼接  真无语了 
-    # <s>[INST]......[/INST] ABCxxx
-
-    all_input_ids = []
-    all_labels = []
-    for s, t in zip(tokenized_sources['input_ids'], tokenized_targets['input_ids']):
-        # 保证有output
-        if len(s) > max_input_length:
-            s = s[:max_input_length]
-
-        input_ids = torch.LongTensor(s + t)[:max_seq_length]
-        labels = torch.LongTensor([IGNORE_INDEX] * len(s) + t)[:max_seq_length]
-        assert len(input_ids) == len(labels)
-        all_input_ids.append(input_ids)
-        all_labels.append(labels)
-
-    results = {'input_ids': all_input_ids, 'labels': all_labels}
-    return results
+# Main data processing function that will concatenate all texts from our dataset and generate chunks of block_size.
+def group_texts(examples):
+    # Concatenate all texts.
+    concatenated_examples = {k: list(chain(*examples[k])) for k in examples.keys()}
+    total_length = len(concatenated_examples[list(examples.keys())[0]])
+    # We drop the small remainder, we could add padding if the model supported it instead of this drop, you can
+    # customize this part to your needs.
+    if total_length >= block_size:
+        total_length = (total_length // block_size) * block_size
+    # Split by chunks of max_len.
+    result = {
+        k: [t[i: i + block_size] for i in range(0, total_length, block_size)]
+        for k, t in concatenated_examples.items()
+    }
+    result["labels"] = result["input_ids"].copy()
+    return result
 
 
 def gen_arrow(files: List, output_dir):
@@ -81,34 +75,40 @@ def gen_arrow(files: List, output_dir):
 
         try:
             processed_dataset = datasets.load_from_disk(_arrow_dir, keep_in_memory=False)
-            logger.info(f'Find cache of single file {file}')
+            logger.info(f'training datasets-{file_name} has been loaded from disk')
 
         except Exception:
 
             _cache_load_dir = os.path.join(cache_load_dir, file_name)  # 单个文件的cache目录
-            raw_dataset = load_dataset("json", data_files=file, cache_dir=_cache_load_dir, keep_in_memory=False)
+            raw_dataset = load_dataset("text", data_files=file, cache_dir=cache_load_dir, keep_in_memory=False)
             logger.info(f"{file} has finished loaded, load cache file: {_cache_load_dir}")
-
-            # 去除其余字段
-            column_names = list(raw_dataset['train'].column_names)
-            columns_to_remove = [c for c in column_names if c not in["instruction", "input", "output"]]
-            raw_dataset['train'] = raw_dataset['train'].remove_columns(columns_to_remove)
 
             _cache_map_dir = os.path.join(cache_map_dir, file_name)  # 单个文件的cache目录
             os.makedirs(_cache_map_dir, exist_ok=True)
             tokenized_dataset = raw_dataset.map(
                 tokenize_function,
                 batched=True,
-                num_proc=None,  # 量太小不需要
-                remove_columns=["instruction", "input", "output"],
+                num_proc=32,
+                remove_columns="text",
                 load_from_cache_file=True,
                 keep_in_memory=False,
                 cache_file_names={k: os.path.join(_cache_map_dir, 'tokenized.arrow') for k in raw_dataset},
-                desc="preprocessing on dataset",
+                desc="Running tokenizer on dataset",
             )
             logger.info(f"{file} has finished map func (tokenizer), map cache file: {_cache_load_dir}")
 
-            processed_dataset = tokenized_dataset
+            grouped_datasets = tokenized_dataset.map(
+                group_texts,
+                batched=True,
+                num_proc=32,
+                load_from_cache_file=True,
+                keep_in_memory=False,
+                cache_file_names={k: os.path.join(_cache_map_dir, 'grouped.arrow') for k in tokenized_dataset},
+                desc=f"Grouping texts in chunks of {block_size}",
+            )
+            logger.info(f"{file} has finished map func (group), map cache file: {_cache_load_dir}")
+
+            processed_dataset = grouped_datasets
 
             processed_dataset.save_to_disk(_arrow_dir)
 
@@ -136,41 +136,37 @@ if __name__ == '__main__':
     validation_split_percentage = None
     validation_split_percentage = 1000  # 小数是比例，整数则是测试样本数量
     validation_split_percentage = 0.05  # 小数是比例，整数则是测试样本数量
+    validation_split_percentage = 0.002  # 小数是比例，整数则是测试样本数量
 
-    # 指令微调必须分别限制input和target，防止input本身已经达到了max_seq_length导致output被全部截断
-    # max_seq_length = 2048
-    # max_input_length = 1536
-    # max_target_length = 512
-    max_seq_length = 1024
-    max_input_length = 768
-    max_target_length = 256
-
+    block_size = 1024
     tokenizer_kwargs = {
         "cache_dir": None,
         "use_fast": True,
         "revision": "main",
-        "use_auth_token": None,
+        "use_auth_token": False,
     }
 
     tokenizer_path = 'tokenizer_chinese_llama'  # 使用chinese_alpca2词表
     tokenizer_path = 'tokenizer_chinese_llama'
 
     tokenizer = LlamaTokenizer.from_pretrained(tokenizer_path, **tokenizer_kwargs)
-    # tokenizer.add_eos_token = True  # 指令微调没有，只让模型加bos
+    tokenizer.add_eos_token = True  # 预训练有，让模型加bos和eos
 
     root_path = '/disk0/fin_group/zyn/'
     root_path = '/home/yss/'
     root_path = './'
 
     files = [
-        f'{root_path}instr_data/cj_instr.json',
+        f'{root_path}pt_data/test100_1.txt',
+        f'{root_path}pt_data/test100_2.txt',
     ]
-    output_dir = 'instr_data/0111'
+
+    output_dir = 'pt_data/0111'
 
     """
     会生成：
     cache_load load时生成，files中每个文件单独一份
-    cache_map map时生成，每个文件单独一份
+    cache_map map时生成，每个文件单独一份，包括tokenize和group
     single_arrow_data map完成后生成，每个文件单独一份
     merge_arrow_data 将上述所有文件合并 并且train test split.
     """

@@ -22,49 +22,53 @@ https://huggingface.co/models?filter=text-generation
 # You can also adapt this script on your own causal language modeling task. Pointers for this are left as comments.
 
 import logging
+import numpy as np
 import math
 import os
 import sys
 from dataclasses import dataclass, field
-from typing import Optional
+from itertools import chain
+from typing import Optional, List, Dict, Any, Mapping
 from pathlib import Path
 import datasets
 import torch
-from build_dataset import build_instruction_dataset, DataCollatorForSupervisedDataset
+from datasets import load_dataset, concatenate_datasets
+
 import transformers
 from transformers import (
     CONFIG_MAPPING,
+    MODEL_FOR_CAUSAL_LM_MAPPING,
     AutoConfig,
-    BitsAndBytesConfig,
+    AutoModelForCausalLM,
     LlamaForCausalLM,
     LlamaTokenizer,
     AutoTokenizer,
     HfArgumentParser,
     Trainer,
     TrainingArguments,
+    is_torch_tpu_available,
     set_seed,
+    BitsAndBytesConfig
 )
+from transformers.testing_utils import CaptureLogger
 from transformers.trainer_utils import get_last_checkpoint
 from transformers.utils import send_example_telemetry
 from transformers.utils.versions import require_version
 
+from sklearn.metrics import accuracy_score
 from peft import LoraConfig, TaskType, get_peft_model, PeftModel, get_peft_model_state_dict
 from peft.tuners.lora import LoraLayer
-
 from transformers.trainer_utils import PREFIX_CHECKPOINT_DIR
-
-
-require_version("datasets>=1.8.0", "To fix: pip install -r examples/pytorch/language-modeling/requirements.txt")
 
 
 class SavePeftModelCallback(transformers.TrainerCallback):
     def save_model(self, args, state, kwargs):
         if state.best_model_checkpoint is not None:
-            checkpoint_folder = os.path.join(state.best_model_checkpoint, "sft_lora_model")
+            checkpoint_folder = os.path.join(state.best_model_checkpoint, "pt_lora_model")
         else:
             checkpoint_folder = os.path.join(args.output_dir, f"{PREFIX_CHECKPOINT_DIR}-{state.global_step}")
 
-        peft_model_path = os.path.join(checkpoint_folder, "sft_lora_model")
+        peft_model_path = os.path.join(checkpoint_folder, "pt_lora_model")
         kwargs["model"].save_pretrained(peft_model_path)
         kwargs["tokenizer"].save_pretrained(peft_model_path)
 
@@ -73,7 +77,7 @@ class SavePeftModelCallback(transformers.TrainerCallback):
         return control
 
     def on_train_end(self, args, state, control, **kwargs):
-        peft_model_path = os.path.join(args.output_dir, "sft_lora_model")
+        peft_model_path = os.path.join(args.output_dir, "pt_lora_model")
         kwargs["model"].save_pretrained(peft_model_path)
         kwargs["tokenizer"].save_pretrained(peft_model_path)
 
@@ -118,6 +122,80 @@ def prepare_model_for_kbit_training(model, use_gradient_checkpointing=True):
     return model
 
 
+def accuracy(predictions, references, normalize=True, sample_weight=None):
+        return {
+            "accuracy": float(
+                accuracy_score(references, predictions, normalize=normalize, sample_weight=sample_weight)
+            )
+        }
+
+
+def compute_metrics(eval_preds):
+    preds, labels = eval_preds
+    # preds have the same shape as the labels, after the argmax(-1) has been calculated
+    # by preprocess_logits_for_metrics but we need to shift the labels
+    labels = labels[:, 1:].reshape(-1)
+    preds = preds[:, :-1].reshape(-1)
+    return accuracy(predictions=preds, references=labels)
+
+
+def preprocess_logits_for_metrics(logits, labels):
+    if isinstance(logits, tuple):
+        # Depending on the model and config, logits may contain extra tensors,
+        # like past_key_values, but logits always come first
+        logits = logits[0]
+    return logits.argmax(dim=-1)
+
+
+def fault_tolerance_data_collator(features: List) -> Dict[str, Any]:
+    if not isinstance(features[0], Mapping):
+        features = [vars(f) for f in features]
+    first = features[0]
+    batch = {}
+
+    # Special handling for labels.
+    # Ensure that tensor is created with the correct type
+    # (it should be automatically the case, but let's make sure of it.)
+    if "label" in first and first["label"] is not None:
+        label = first["label"].item() if isinstance(first["label"], torch.Tensor) else first["label"]
+        dtype = torch.long if isinstance(label, int) else torch.float
+        batch["labels"] = torch.tensor([f["label"] for f in features], dtype=dtype)
+    elif "label_ids" in first and first["label_ids"] is not None:
+        if isinstance(first["label_ids"], torch.Tensor):
+            batch["labels"] = torch.stack([f["label_ids"] for f in features])
+        else:
+            dtype = torch.long if isinstance(first["label_ids"][0], int) else torch.float
+            batch["labels"] = torch.tensor([f["label_ids"] for f in features], dtype=dtype)
+
+    # Handling of all other possible keys.
+    # Again, we will use the first element to figure out which key/values are not None for this model.
+
+    try:
+        for k, v in first.items():
+            if k not in ("label", "label_ids") and v is not None and not isinstance(v, str):
+                if isinstance(v, torch.Tensor):
+                    batch[k] = torch.stack([f[k] for f in features])
+                elif isinstance(v, np.ndarray):
+                    batch[k] = torch.tensor(np.stack([f[k] for f in features]))
+                else:
+                    batch[k] = torch.tensor([f[k] for f in features])
+    except ValueError: # quick fix by simply take the first example
+        for k, v in first.items():
+            if k not in ("label", "label_ids") and v is not None and not isinstance(v, str):
+                if isinstance(v, torch.Tensor):
+                    batch[k] = torch.stack([features[0][k]] * len(features))
+                elif isinstance(v, np.ndarray):
+                    batch[k] = torch.tensor(np.stack([features[0][k]] * len(features)))
+                else:
+                    batch[k] = torch.tensor([features[0][k]] * len(features))
+
+    return batch
+
+
+MODEL_CONFIG_CLASSES = list(MODEL_FOR_CAUSAL_LM_MAPPING.keys())
+MODEL_TYPES = tuple(conf.model_type for conf in MODEL_CONFIG_CLASSES)
+
+
 @dataclass
 class ModelArguments:
     """
@@ -140,7 +218,10 @@ class ModelArguments:
             )
         },
     )
-
+    model_type: Optional[str] = field(
+        default=None,
+        metadata={"help": "If training from scratch, pass a model type from the list: " + ", ".join(MODEL_TYPES)},
+    )
     config_overrides: Optional[str] = field(
         default=None,
         metadata={
@@ -204,13 +285,43 @@ class DataTrainingArguments:
     dataset_dir: Optional[str] = field(
         default=None, metadata={"help": "The name of the dataset to use (via the datasets library)."}
     )
-
+    dataset_config_name: Optional[str] = field(
+        default=None, metadata={"help": "The configuration name of the dataset to use (via the datasets library)."}
+    )
     train_file: Optional[str] = field(default=None, metadata={"help": "The input training data file (a text file)."})
     validation_file: Optional[str] = field(
         default=None,
         metadata={"help": "An optional input evaluation data file to evaluate the perplexity on (a text file)."},
     )
-
+    max_train_samples: Optional[int] = field(
+        default=None,
+        metadata={
+            "help": (
+                "For debugging purposes or quicker training, truncate the number of training examples to this "
+                "value if set."
+            )
+        },
+    )
+    max_eval_samples: Optional[int] = field(
+        default=None,
+        metadata={
+            "help": (
+                "For debugging purposes or quicker training, truncate the number of evaluation examples to this "
+                "value if set."
+            )
+        },
+    )
+    streaming: bool = field(default=False, metadata={"help": "Enable streaming mode"})
+    block_size: Optional[int] = field(
+        default=None,
+        metadata={
+            "help": (
+                "Optional input sequence length after tokenization. "
+                "The training dataset will be truncated in block of this size for training. "
+                "Default to the model max input length for single sentence inputs (take into account special tokens)."
+            )
+        },
+    )
     overwrite_cache: bool = field(
         default=False, metadata={"help": "Overwrite the cached training and evaluation sets"}
     )
@@ -227,9 +338,11 @@ class DataTrainingArguments:
     keep_linebreaks: bool = field(
         default=True, metadata={"help": "Whether to keep line breaks when using TXT files or not."}
     )
-    data_cache_dir: Optional[str] = field(default=None, metadata={"help": "The datasets processed stored"})
+    data_cache_dir: Optional[str] = field(default="./", metadata={"help": "The datasets processed stored"})
 
-    max_seq_length: Optional[int] = field(default=1024)
+    def __post_init__(self):
+        if self.streaming:
+            require_version("datasets>=2.0.0", "The streaming feature requires `datasets>=2.0.0`")
 
 
 @dataclass
@@ -239,6 +352,7 @@ class MyTrainingArguments(TrainingArguments):
     lora_dropout : Optional[float] = field(default=0.1)
     lora_alpha : Optional[float] = field(default=32.)
     modules_to_save : Optional[str] = field(default=None)
+    debug_mode : Optional[bool] = field(default=False)
     peft_path : Optional[str] = field(default=None)
     use_flash_attention_2 : Optional[bool] = field(default=False)
     double_quant: Optional[bool] = field(default=True)
@@ -260,13 +374,14 @@ def main():
     else:
         model_args, data_args, training_args = parser.parse_args_into_dataclasses()
 
+    # Sending telemetry. Tracking the example usage helps us better allocate resources to maintain them. The
+    # information sent is the one passed as arguments along with your Python/PyTorch versions.
     send_example_telemetry("run_clm", model_args, data_args)
 
     # Setup logging
     logging.basicConfig(format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",datefmt="%m/%d/%Y %H:%M:%S",
         level=logging.INFO,  # if training_args.local_rank in [-1, 0] else logging.WARN,
         handlers=[logging.StreamHandler(sys.stdout)],)
-
 
     if training_args.should_log:
         # The default of training_args.log_level is passive, so we set log level at info here to have that default.
@@ -280,14 +395,10 @@ def main():
     transformers.utils.logging.enable_explicit_format()
     # transformers.tokenization_utils.logging.set_verbosity_warning()
 
-    logger.info(f'===training_args===:\n{training_args}\n')
-    logger.info(f'===data_args===:\n{data_args}\n')
-    logger.info(f'===model_args===:\n{model_args}\n')
-    
     # Log on each process the small summary:
     logger.warning(
-        f"Process rank: {training_args.local_rank}, device: {training_args.device}, n_gpu: {training_args.n_gpu}"
-        + f"distributed training: {bool(training_args.local_rank != -1)}, 16-bits training: {training_args.fp16 or training_args.bf16}"
+        f"Process rank: {training_args.local_rank}, device: {training_args.device}, n_gpu: {training_args.n_gpu} "
+        f"distributed training: {bool(training_args.local_rank != -1)}, 16-bits training: {training_args.fp16} "
     )
 
     # Detecting last checkpoint.
@@ -340,69 +451,161 @@ def main():
             "You are instantiating a new tokenizer from scratch. This is not supported by this script."
             "You can do it from another script, save it, and load it from here, using --tokenizer_name."
         )
+    tokenizer.add_eos_token = True
 
-    # if (len(tokenizer)) != 55296:
-    #     raise ValueError(f"The vocab size of the tokenizer should be 55296, but found {len(tokenizer)}.\n"
-    #                      "Please use Chinese-LLaMA-2 tokenizer.")
+    # Preprocessing the datasets.
+    # First we tokenize all the texts.
+    # since this will be pickled to avoid _LazyModule error in Hasher force logger loading before tokenize_function
+    tok_logger = transformers.utils.logging.get_logger("transformers.tokenization_utils_base")
 
-    data_collator = DataCollatorForSupervisedDataset(tokenizer=tokenizer)
-    eval_dataset=None
-    train_dataset = None
-    # final_data_path='/home/yss/data_fin/ins_1219/arrow_data1219'
-    # lm_datasets = datasets.load_from_disk(final_data_path, keep_in_memory=False)
-    # logger.info(f'training datasets-{final_data_path} has been loaded from disk')
-    # train_dataset = lm_datasets['train']
-    # train_dataset.set_format('torch')
-    # eval_dataset = lm_datasets['test']
-    # eval_dataset.set_format('torch')
+    def tokenize_function(examples):
+        with CaptureLogger(tok_logger) as cl:
+            output = tokenizer(examples["text"])
+        # clm input could be much much longer than block_size
+        if "Token indices sequence length is longer than the" in cl.out:
+            tok_logger.warning(
+                "^^^^^^^^^^^^^^^^ Please ignore the warning above - this long input will be chunked into smaller bits"
+                " before being passed to the model."
+            )
+        return output
+    if data_args.block_size is None:
+        block_size = tokenizer.model_max_length
+        if block_size > 1024:
+            logger.warning(
+                "The chosen tokenizer supports a `model_max_length` that is longer than the default `block_size` value"
+                " of 1024. If you would like to use a longer `block_size` up to `tokenizer.model_max_length` you can"
+                " override this default with `--block_size xxx`."
+            )
+            block_size = 1024
+    else:
+        if data_args.block_size > tokenizer.model_max_length:
+            logger.warning(
+                f"The block_size passed ({data_args.block_size}) is larger than the maximum length for the model"
+                f"({tokenizer.model_max_length}). Using block_size={tokenizer.model_max_length}."
+            )
+        block_size = min(data_args.block_size, tokenizer.model_max_length)
 
+    # Main data processing function that will concatenate all texts from our dataset and generate chunks of block_size.
+    def group_texts(examples):
+        # Concatenate all texts.
+        concatenated_examples = {k: list(chain(*examples[k])) for k in examples.keys()}
+        total_length = len(concatenated_examples[list(examples.keys())[0]])
+        # We drop the small remainder, we could add padding if the model supported it instead of this drop, you can
+        # customize this part to your needs.
+        if total_length >= block_size:
+            total_length = (total_length // block_size) * block_size
+        # Split by chunks of max_len.
+        result = {
+            k: [t[i : i + block_size] for i in range(0, total_length, block_size)]
+            for k, t in concatenated_examples.items()
+        }
+        result["labels"] = result["input_ids"].copy()
+        return result
+    # with training_args.main_process_first(desc="dataset map tokenization and grouping"):
+        # lm_datasets = []
+        # path = Path(data_args.dataset_dir)
+        # files = [file.name for file in path.glob("*.txt")]
+        # if training_args.debug_mode is True:
+        #     files = [files[0]]
+        # for idx, file in enumerate(files):
+        #     data_file = os.path.join(path, file)
+        #     filename = ''.join(file.split(".")[:-1])
+        #     cache_path = os.path.join(data_args.data_cache_dir, filename)
+        #     os.makedirs(cache_path, exist_ok=True)
+        #     try:
+        #         processed_dataset = datasets.load_from_disk(cache_path, keep_in_memory=False)
+        #         logger.info(f'training datasets-{filename} has been loaded from disk')
+        #     except Exception:
+        #         cache_dir = os.path.join(data_args.data_cache_dir, filename+"_text")
+        #         os.makedirs(cache_dir, exist_ok=True)
+        #         raw_dataset = load_dataset("text", data_files=data_file, cache_dir=cache_dir, keep_in_memory=False)
+        #         logger.info(f"{file} has been loaded")
+        #         tokenized_dataset = raw_dataset.map(
+        #             tokenize_function,
+        #             batched=True,
+        #             num_proc=data_args.preprocessing_num_workers,
+        #             remove_columns="text",
+        #             load_from_cache_file=True,
+        #             keep_in_memory=False,
+        #             cache_file_names = {k: os.path.join(cache_dir, 'tokenized.arrow') for k in raw_dataset},
+        #             desc="Running tokenizer on dataset",
+        #         )
+        #         grouped_datasets = tokenized_dataset.map(
+        #             group_texts,
+        #             batched=True,
+        #             num_proc=data_args.preprocessing_num_workers,
+        #             load_from_cache_file=True,
+        #             keep_in_memory=False,
+        #             cache_file_names = {k: os.path.join(cache_dir, 'grouped.arrow') for k in tokenized_dataset},
+        #             desc=f"Grouping texts in chunks of {block_size}",
+        #         )
+        #         processed_dataset = grouped_datasets
+        #         processed_dataset.save_to_disk(cache_path)
+        #     if idx == 0:
+        #         lm_datasets = processed_dataset['train']
+        #     else:
+        #         assert lm_datasets.features.type == processed_dataset["train"].features.type
+        #         lm_datasets = concatenate_datasets([lm_datasets, processed_dataset["train"]])
+
+        # lm_datasets = lm_datasets.train_test_split(test_size = data_args.validation_split_percentage)
+
+        # files = [
+        #     '/disk0/fin_group/zyn/data_fin/txt_0816/04_element_extraction/04_element_extraction.pretrain.txt',
+        #     '/disk0/fin_group/zyn/data_fin/txt_0816/05_knowledge_base/05_knowledge_base.txt',
+        #     '/disk0/fin_group/zyn/data_fin/txt_0816/txt/merged_00.txt',
+        #     '/disk0/fin_group/zyn/data_fin/txt_0816/txt/merged_02.txt',
+        # ]
+        # cache_dir='/disk0/fin_group/zyn/data_fin/txt_0816/cache'
+        # lm_datasets = []
+        # for idx, file in enumerate(files):
+        #     print(file)
+        #     file = Path(file)
+        #     file_dir = file.parent
+        #     if cache_dir is None:
+        #         cache_dir = file_dir
+        #     else:
+        #         cache_dir = Path(cache_dir)
+        #     file_name = file.stem
+        #     arrow_cache_path = cache_dir / file_name
+        #     arrow_cache_path.mkdir(parents=True, exist_ok=True)
+
+        #     processed_dataset = datasets.load_from_disk(str(arrow_cache_path), keep_in_memory=False)
+        #     logger.info(f'training datasets-{file_name} has been loaded from disk')
+        #     if idx == 0:
+        #         lm_datasets = processed_dataset['train']
+        #     else:
+        #         assert lm_datasets.features.type == processed_dataset["train"].features.type
+        #         lm_datasets = concatenate_datasets([lm_datasets, processed_dataset["train"]])
+        # lm_datasets = lm_datasets.train_test_split(test_size = data_args.validation_split_percentage, seed=1234)
+            
     if training_args.do_train:
-        # with training_args.main_process_first(desc="loading and tokenization"):
-        #     path = Path(data_args.dataset_dir)
-        #     files = [os.path.join(path,file.name) for file in path.glob("*.json")]
-        #     logger.info(f"Training files: {' '.join(files)}")
-        #     train_dataset = build_instruction_dataset(
-        #         data_path=files,
-        #         tokenizer=tokenizer,
-        #         max_seq_length=data_args.max_seq_length,
-        #         data_cache_dir = None,
-        #         preprocessing_num_workers = data_args.preprocessing_num_workers)
-
+        # train_dataset = lm_datasets['train']
         # my code
         lm_datasets = datasets.load_from_disk(data_args.dataset_dir, keep_in_memory=False)
         logger.info(f'training datasets (train split)-{data_args.dataset_dir} has been loaded from disk')
         train_dataset = lm_datasets['train']
         train_dataset.set_format('torch')
 
+        if data_args.max_train_samples is not None:
+            max_train_samples = min(len(train_dataset), data_args.max_train_samples)
+            train_dataset = train_dataset.select(range(max_train_samples))
         logger.info(f"Num train_samples  {len(train_dataset)}")
         logger.info("Training example:")
         logger.info(tokenizer.decode(train_dataset[0]['input_ids']))
     if training_args.do_eval:
-        # with training_args.main_process_first(desc="loading and tokenization"):
-        #     files = [data_args.validation_file]
-        #     logger.info(f"Evaluation files: {' '.join(files)}")
-        #     eval_dataset = build_instruction_dataset(
-        #         data_path=files,
-        #         tokenizer=tokenizer,
-        #         max_seq_length=data_args.max_seq_length,
-        #         data_cache_dir = None,
-        #         preprocessing_num_workers = data_args.preprocessing_num_workers)
-
+        # eval_dataset = lm_datasets["test"]
         # my code
         lm_datasets = datasets.load_from_disk(data_args.dataset_dir, keep_in_memory=False)
         logger.info(f'evaluation datasets (test split)-{data_args.dataset_dir} has been loaded from disk')
         eval_dataset = lm_datasets['test']
         eval_dataset.set_format('torch')
 
+        if data_args.max_eval_samples is not None:
+            max_eval_samples = min(len(eval_dataset), data_args.max_eval_samples)
+            eval_dataset = eval_dataset.select(range(max_eval_samples))
         logger.info(f"Num eval_samples  {len(eval_dataset)}")
         logger.info("Evaluation example:")
         logger.info(tokenizer.decode(eval_dataset[0]['input_ids']))
-
-    torch_dtype = (
-        model_args.torch_dtype
-        if model_args.torch_dtype in ["auto", None]
-        else getattr(torch, model_args.torch_dtype)
-    )
     compute_dtype = (torch.float16 if training_args.fp16 else (torch.bfloat16 if training_args.bf16 else torch.float32))
     if training_args.load_in_kbits in [4, 8]:
         load_in_4bit = training_args.load_in_kbits == 4
@@ -426,41 +629,43 @@ def main():
         quantization_config = None
     if quantization_config is not None:
         logger.info(f"quantization_config:{quantization_config.to_dict()}")
-    device_map = {"":int(os.environ.get("LOCAL_RANK") or 0)}
-
-    try:  # mycode
-        import json
-        deepspeed_config = json.load(open(training_args.deepspeed, 'r', encoding='U8'))
-        use_zero3 = (deepspeed_config['zero_optimization']['stage'] == 3)
-    except:
-        use_zero3 = False
-    low_cpu_mem_usage = True
-    if use_zero3:
-        low_cpu_mem_usage = False
-        device_map = None
-
-    model = LlamaForCausalLM.from_pretrained(
-        model_args.model_name_or_path,
-        config=config,
-        cache_dir=model_args.cache_dir,
-        revision=model_args.model_revision,
-        use_auth_token=True if model_args.use_auth_token else None,
-        torch_dtype=torch_dtype,
-        low_cpu_mem_usage=low_cpu_mem_usage,
-        device_map=device_map,
-        load_in_4bit=load_in_4bit,
-        load_in_8bit=load_in_8bit,
-        quantization_config=quantization_config,
-        use_flash_attention_2=training_args.use_flash_attention_2
-    )
+    if model_args.model_name_or_path:
+        torch_dtype = (
+            model_args.torch_dtype
+            if model_args.torch_dtype in ["auto", None]
+            else getattr(torch, model_args.torch_dtype)
+        )
+        device_map = {"":int(os.environ.get("LOCAL_RANK") or 0)}
+        model = LlamaForCausalLM.from_pretrained(
+            model_args.model_name_or_path,
+            from_tf=bool(".ckpt" in model_args.model_name_or_path),
+            config=config,
+            cache_dir=model_args.cache_dir,
+            revision=model_args.model_revision,
+            use_auth_token=True if model_args.use_auth_token else None,
+            torch_dtype=torch_dtype,
+            low_cpu_mem_usage=True,
+            device_map=device_map,
+            load_in_4bit=load_in_4bit,
+            load_in_8bit=load_in_8bit,
+            quantization_config=quantization_config,
+            use_flash_attention_2=training_args.use_flash_attention_2
+        )
+    else:
+        model = AutoModelForCausalLM.from_config(config)
+        n_params = sum({p.data_ptr(): p.numel() for p in model.parameters()}.values())
+        logger.info(f"Training new model from scratch - Total size={n_params/2**20:.2f}M params")
     if training_args.load_in_kbits in [4, 8]:
         model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=training_args.gradient_checkpointing)
     model.config.use_cache = False
-    model_vocab_size = model.get_input_embeddings().weight.shape[0]
+    model_vocab_size = model.get_output_embeddings().weight.size(0)
+    tokenizer_vocab_size = len(tokenizer)
     logger.info(f"Model vocab size: {model_vocab_size}")
-    logger.info(f"len(tokenizer):{len(tokenizer)}")
-    if model_vocab_size != len(tokenizer):
-        logger.info(f"Resize model vocab size to {len(tokenizer)}")
+    logger.info(f"Tokenizer vocab size: {tokenizer_vocab_size}")
+    # if tokenizer_vocab_size != 55296:
+    #     raise ValueError(f"The vocab size of tokenizer is {tokenizer_vocab_size}, not 55296. Please use Chinese-LLaMA-2 tokenizer.")
+    if model_vocab_size != tokenizer_vocab_size:
+        logger.info(f"Resize model vocab size to {tokenizer_vocab_size}")
         model.resize_token_embeddings(len(tokenizer))
     if not training_args.full_finetuning:
         if training_args.peft_path is not None:
@@ -491,7 +696,6 @@ def main():
         model.state_dict = (
             lambda self, *_, **__: get_peft_model_state_dict(self, old_state_dict())
         ).__get__(model, type(model))
-
     if not training_args.full_finetuning and training_args.gradient_checkpointing and \
         (not model.modules_to_save or 'embed_tokens' not in model.modules_to_save):
         # enable requires_grad to avoid exception during backward pass when using gradient_checkpoint without tuning embed.
@@ -506,10 +710,14 @@ def main():
     trainer = Trainer(
         model=model,
         args=training_args,
-        train_dataset=train_dataset,
-        eval_dataset=eval_dataset,
+        train_dataset=train_dataset if training_args.do_train else None,
+        eval_dataset=eval_dataset if training_args.do_eval else None,
         tokenizer=tokenizer,
-        data_collator=data_collator,
+        data_collator=fault_tolerance_data_collator,
+        compute_metrics=compute_metrics if training_args.do_eval and not is_torch_tpu_available() else None,
+        preprocess_logits_for_metrics=preprocess_logits_for_metrics
+        if training_args.do_eval and not is_torch_tpu_available()
+        else None,
     )
 
     if not training_args.full_finetuning: # lora时
@@ -526,7 +734,10 @@ def main():
 
         metrics = train_result.metrics
 
-        metrics["train_samples"] = len(train_dataset)
+        max_train_samples = (
+            data_args.max_train_samples if data_args.max_train_samples is not None else len(train_dataset)
+        )
+        metrics["train_samples"] = min(max_train_samples, len(train_dataset))
 
         trainer.log_metrics("train", metrics)
         trainer.save_metrics("train", metrics)
@@ -539,7 +750,9 @@ def main():
         logger.info("*** Evaluate ***")
 
         metrics = trainer.evaluate()
-        metrics["eval_samples"] =len(eval_dataset)
+
+        max_eval_samples = data_args.max_eval_samples if data_args.max_eval_samples is not None else len(eval_dataset)
+        metrics["eval_samples"] = min(max_eval_samples, len(eval_dataset))
         try:
             perplexity = math.exp(metrics["eval_loss"])
         except OverflowError:
