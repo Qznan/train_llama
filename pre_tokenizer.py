@@ -56,61 +56,74 @@ def group_texts(examples):
         k: [t[i: i + block_size] for i in range(0, total_length, block_size)]
         for k, t in concatenated_examples.items()
     }
+
+    # # customed 保留最后的遗留数据 small remainde
+    # if len(concatenated_examples[list(examples.keys())[0]]) % block_size != 0:
+    #     for k in result.keys():
+    #         result[k] += [concatenated_examples[k][-block_size:]]
+
     result["labels"] = result["input_ids"].copy()
     return result
 
 
 def gen_arrow(files: List, output_dir):
     lm_datasets = []
-    cache_load_dir = os.path.join(output_dir, 'cache_load')
-    cache_map_dir = os.path.join(output_dir, 'cache_map')
-    arrow_dir = os.path.join(output_dir, 'single_arrow_data')
-    merge_arrow_dir = os.path.join(output_dir, 'merge_arrow_data')
+    cache_load_dir = os.path.join(output_dir, 'cache_load')  # 存放各个小文件的load即(load_dataset)产生的cache目录
+    cache_map_dir = os.path.join(output_dir, 'cache_map')  # 存放各个小文件的map产生的cache目录
+    arrow_dir = os.path.join(output_dir, 'single_arrow_data')  # 存放每个处理好的Dataset/DatasetDict的arrow格式文件的目录
+    merge_arrow_dir = os.path.join(output_dir, 'merge_arrow_data')  # 存放合并后的Dataset/DatasetDict的arrow格式文件的目录
     (os.makedirs(d, exist_ok=True) for d in [cache_load_dir, cache_map_dir, arrow_dir])
 
     for idx, file in enumerate(files):
         logger.info(f'loading {file}...')
         file_name = Path(file).stem
-        _arrow_dir = os.path.join(arrow_dir, file_name)
+        # _arrow_dir = os.path.join(arrow_dir, file_name + f'_{block_size}')
+        _arrow_dir = os.path.join(arrow_dir, file_name)  # 每单个处理好的Dataset/DatasetDict的arrow格式文件的目录。e.g.single_arrow_data/test1w_1/
 
         try:
-            processed_dataset = datasets.load_from_disk(_arrow_dir, keep_in_memory=False)
+            processed_dataset = datasets.load_from_disk(_arrow_dir, keep_in_memory=False)  # e.g.single_arrow_data/test1w_1/
             logger.info(f'training datasets-{file_name} has been loaded from disk')
 
         except Exception:
+            """ load_dataset https://huggingface.co/docs/datasets/v2.16.1/en/package_reference/loading_methods#datasets.packaged_modules.text.TextConfig """
+            _cache_load_dir = os.path.join(cache_load_dir, file_name)  # 单个文件的load即(load_dataset)产生的cache目录
+            raw_dataset = load_dataset("text", data_files=file, cache_dir=cache_load_dir, keep_in_memory=False,
+                                       keep_linebreaks=False,  # 是否保持\n
+                                       sample_by='line'  # line(\n分割) | paragraph(\n\n分割) | document(整个文件整篇一起)
+                                       )  # 默认是生成只有train split的DatasetDict
+            logger.info(f"{file} has finished loaded, [load] cache file: {_cache_load_dir}")
 
-            _cache_load_dir = os.path.join(cache_load_dir, file_name)  # 单个文件的cache目录
-            raw_dataset = load_dataset("text", data_files=file, cache_dir=cache_load_dir, keep_in_memory=False)
-            logger.info(f"{file} has finished loaded, load cache file: {_cache_load_dir}")
-
-            _cache_map_dir = os.path.join(cache_map_dir, file_name)  # 单个文件的cache目录
+            _cache_map_dir = os.path.join(cache_map_dir, file_name)  # 单个文件的map产生的cache目录
             os.makedirs(_cache_map_dir, exist_ok=True)
+            """ map https://huggingface.co/docs/datasets/v2.16.1/en/package_reference/main_classes#datasets.DatasetDict.map """
             tokenized_dataset = raw_dataset.map(
                 tokenize_function,
-                batched=True,
-                num_proc=32,
+                batched=True,  # batch_size默认是1000
+                num_proc=32,  # 多线程，默认是1
                 remove_columns="text",
-                load_from_cache_file=True,
+                load_from_cache_file=True,  # 如检测到有相同函数的计算结果缓存，是否直接读取
                 keep_in_memory=False,
+                # 将map中函数的计算结果缓存，可不同split(train/test)中指定不同
                 cache_file_names={k: os.path.join(_cache_map_dir, 'tokenized.arrow') for k in raw_dataset},
                 desc="Running tokenizer on dataset",
             )
-            logger.info(f"{file} has finished map func (tokenizer), map cache file: {_cache_load_dir}")
+            logger.info(f"{file} has finished map func (tokenizer), [map] cache file: {_cache_load_dir}")
 
             grouped_datasets = tokenized_dataset.map(
                 group_texts,
-                batched=True,
-                num_proc=32,
-                load_from_cache_file=True,
+                batched=True,  # batch_size默认是1000
+                num_proc=32,  # 多线程，默认是1
+                load_from_cache_file=True,  # 如检测到有相同函数的计算结果缓存，是否直接读取
                 keep_in_memory=False,
+                # 将map中函数的计算结果缓存，可不同split(train/test)中指定不同
                 cache_file_names={k: os.path.join(_cache_map_dir, 'grouped.arrow') for k in tokenized_dataset},
                 desc=f"Grouping texts in chunks of {block_size}",
             )
-            logger.info(f"{file} has finished map func (group), map cache file: {_cache_load_dir}")
+            logger.info(f"{file} has finished map func (group), [map] cache file: {_cache_load_dir}")
 
             processed_dataset = grouped_datasets
-
-            processed_dataset.save_to_disk(_arrow_dir)
+            """ save_to_disk https://huggingface.co/docs/datasets/v2.16.1/en/package_reference/main_classes#datasets.Dataset.save_to_disk """
+            processed_dataset.save_to_disk(_arrow_dir)  # 处理好的单个arrow输出目录 e.g.single_arrow_data/test1w_1/
 
         if idx == 0:
             lm_datasets = processed_dataset['train']
@@ -123,9 +136,9 @@ def gen_arrow(files: List, output_dir):
     if validation_split_percentage is not None:
         logger.info(f'split train and test, test ratio or num: {validation_split_percentage} seed=1234')
         lm_datasets = lm_datasets.train_test_split(test_size=validation_split_percentage, seed=1234)
+        logger.info(f'Finish split train and test. merge output datasets: {lm_datasets}')
 
-    logger.info(f'Finish split train and test. merge output datasets: {lm_datasets}')
-    lm_datasets.save_to_disk(merge_arrow_dir, num_proc=1)
+    lm_datasets.save_to_disk(merge_arrow_dir, num_proc=1)  # 存储就不需要多线程了，默认按每个分片shard最大500M自动分片存
     logger.info(f'Finish saved merge output datasets path: {merge_arrow_dir}')
 
     with open(output_dir + f'/{Path(tokenizer_path).stem}.info', 'w', encoding='U8') as f:
