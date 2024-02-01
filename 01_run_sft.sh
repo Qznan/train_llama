@@ -17,10 +17,11 @@ chinese_tokenizer_path=tokenizer_chinese_llama  # chinese-llama原生词表 5w
 
 dataset_dir=${root_path}/instr_data/0111/merge_arrow_data  # 这里修改原代码，指定pre_tokenizer_inst生成的arrow文件目录
 
-
-per_device_train_batch_size=1
-per_device_eval_batch_size=1
-gradient_accumulation_steps=8
+BATCH_SIZE="
+    --per_device_train_batch_size 1 \
+    --per_device_eval_batch_size 1 \
+    --gradient_accumulation_steps 8 \
+"
 
 # 以下在pre_tokenizer_inst时已经指定，这里无需管，不起作用
 max_seq_length=1024
@@ -35,7 +36,6 @@ deepspeed_config_file=ds_zero2_no_offload.json
 
 # run_name=tmp  #wandb的run名字
 report_to=none  # 不记录到wandb
-#report_to=wandb  # 记录到wandb
 
 # 加full_finetuning即全量微调
 
@@ -48,8 +48,7 @@ run_clm_sft_with_peft2.py \
     --tokenizer_name_or_path ${chinese_tokenizer_path} \
     --dataset_dir ${dataset_dir} \
     --validation_split_percentage ${validation_split_percentage} \
-    --per_device_train_batch_size ${per_device_train_batch_size} \
-    --per_device_eval_batch_size ${per_device_eval_batch_size} \
+    $BATCH_SIZE \
     --do_train \
     --do_eval \
     --seed 1234 \
@@ -66,7 +65,6 @@ run_clm_sft_with_peft2.py \
     --evaluation_strategy epoch \
     --eval_steps 100 \
     --save_steps 200 \
-    --gradient_accumulation_steps ${gradient_accumulation_steps} \
     --preprocessing_num_workers 8 \
     --max_seq_length ${max_seq_length} \
     --output_dir ${output_dir} \

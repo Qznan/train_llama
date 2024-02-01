@@ -348,13 +348,6 @@ def main():
     data_collator = DataCollatorForSupervisedDataset(tokenizer=tokenizer)
     eval_dataset=None
     train_dataset = None
-    # final_data_path='/home/yss/data_fin/ins_1219/arrow_data1219'
-    # lm_datasets = datasets.load_from_disk(final_data_path, keep_in_memory=False)
-    # logger.info(f'training datasets-{final_data_path} has been loaded from disk')
-    # train_dataset = lm_datasets['train']
-    # train_dataset.set_format('torch')
-    # eval_dataset = lm_datasets['test']
-    # eval_dataset.set_format('torch')
 
     if training_args.do_train:
         # with training_args.main_process_first(desc="loading and tokenization"):
@@ -369,9 +362,9 @@ def main():
         #         preprocessing_num_workers = data_args.preprocessing_num_workers)
 
         # my code
-        lm_datasets = datasets.load_from_disk(data_args.dataset_dir, keep_in_memory=False)
+        train_dataset = datasets.load_from_disk(data_args.dataset_dir + '/train', keep_in_memory=False)
+        # train_dataset = lm_datasets['train']
         logger.info(f'training datasets (train split)-{data_args.dataset_dir} has been loaded from disk')
-        train_dataset = lm_datasets['train']
         train_dataset.set_format('torch')
 
         logger.info(f"Num train_samples  {len(train_dataset)}")
@@ -389,9 +382,9 @@ def main():
         #         preprocessing_num_workers = data_args.preprocessing_num_workers)
 
         # my code
-        lm_datasets = datasets.load_from_disk(data_args.dataset_dir, keep_in_memory=False)
+        eval_dataset = datasets.load_from_disk(data_args.dataset_dir + '/test', keep_in_memory=False)
+        # eval_dataset = lm_datasets['test']
         logger.info(f'evaluation datasets (test split)-{data_args.dataset_dir} has been loaded from disk')
-        eval_dataset = lm_datasets['test']
         eval_dataset.set_format('torch')
 
         logger.info(f"Num eval_samples  {len(eval_dataset)}")
