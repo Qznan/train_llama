@@ -123,11 +123,11 @@ def prepare_model_for_kbit_training(model, use_gradient_checkpointing=True):
 
 
 def accuracy(predictions, references, normalize=True, sample_weight=None):
-        return {
-            "accuracy": float(
-                accuracy_score(references, predictions, normalize=normalize, sample_weight=sample_weight)
-            )
-        }
+    return {
+        "accuracy": float(
+            accuracy_score(references, predictions, normalize=normalize, sample_weight=sample_weight)
+        )
+    }
 
 
 def compute_metrics(eval_preds):
@@ -179,7 +179,7 @@ def fault_tolerance_data_collator(features: List) -> Dict[str, Any]:
                     batch[k] = torch.tensor(np.stack([f[k] for f in features]))
                 else:
                     batch[k] = torch.tensor([f[k] for f in features])
-    except ValueError: # quick fix by simply take the first example
+    except ValueError:  # quick fix by simply take the first example
         for k, v in first.items():
             if k not in ("label", "label_ids") and v is not None and not isinstance(v, str):
                 if isinstance(v, torch.Tensor):
@@ -347,25 +347,24 @@ class DataTrainingArguments:
 
 @dataclass
 class MyTrainingArguments(TrainingArguments):
-    trainable : Optional[str] = field(default="q_proj,v_proj")
-    lora_rank : Optional[int] = field(default=8)
-    lora_dropout : Optional[float] = field(default=0.1)
-    lora_alpha : Optional[float] = field(default=32.)
-    modules_to_save : Optional[str] = field(default=None)
-    debug_mode : Optional[bool] = field(default=False)
-    peft_path : Optional[str] = field(default=None)
-    use_flash_attention_2 : Optional[bool] = field(default=False)
+    trainable: Optional[str] = field(default="q_proj,v_proj")
+    lora_rank: Optional[int] = field(default=8)
+    lora_dropout: Optional[float] = field(default=0.1)
+    lora_alpha: Optional[float] = field(default=32.)
+    modules_to_save: Optional[str] = field(default=None)
+    debug_mode: Optional[bool] = field(default=False)
+    peft_path: Optional[str] = field(default=None)
+    use_flash_attention_2: Optional[bool] = field(default=False)
     double_quant: Optional[bool] = field(default=True)
     quant_type: Optional[str] = field(default="nf4")
     load_in_kbits: Optional[int] = field(default=16)
-    full_finetuning : Optional[bool] = field(default=False)
+    full_finetuning: Optional[bool] = field(default=False)
 
 
 logger = logging.getLogger(__name__)
 
 
 def main():
-
     parser = HfArgumentParser((ModelArguments, DataTrainingArguments, MyTrainingArguments))
     if len(sys.argv) == 2 and sys.argv[1].endswith(".json"):
         # If we pass only one argument to the script and it's the path to a json file,
@@ -379,9 +378,9 @@ def main():
     send_example_telemetry("run_clm", model_args, data_args)
 
     # Setup logging
-    logging.basicConfig(format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",datefmt="%m/%d/%Y %H:%M:%S",
-        level=logging.INFO,  # if training_args.local_rank in [-1, 0] else logging.WARN,
-        handlers=[logging.StreamHandler(sys.stdout)],)
+    logging.basicConfig(format="%(asctime)s - %(levelname)s - %(name)s - %(message)s", datefmt="%m/%d/%Y %H:%M:%S",
+                        level=logging.INFO,  # if training_args.local_rank in [-1, 0] else logging.WARN,
+                        handlers=[logging.StreamHandler(sys.stdout)], )
 
     if training_args.should_log:
         # The default of training_args.log_level is passive, so we set log level at info here to have that default.
@@ -398,7 +397,7 @@ def main():
     # Log on each process the small summary:
     logger.warning(
         f"Process rank: {training_args.local_rank}, device: {training_args.device}, n_gpu: {training_args.n_gpu} "
-        f"distributed training: {bool(training_args.local_rank != -1)}, 16-bits training: {training_args.fp16} "
+        f"distributed training: {bool(training_args.local_rank != -1)}, 16-bits training: {training_args.fp16 or training_args.bf16} "
     )
 
     # Detecting last checkpoint.
@@ -468,6 +467,7 @@ def main():
                 " before being passed to the model."
             )
         return output
+
     if data_args.block_size is None:
         block_size = tokenizer.model_max_length
         if block_size > 1024:
@@ -496,94 +496,65 @@ def main():
             total_length = (total_length // block_size) * block_size
         # Split by chunks of max_len.
         result = {
-            k: [t[i : i + block_size] for i in range(0, total_length, block_size)]
+            k: [t[i: i + block_size] for i in range(0, total_length, block_size)]
             for k, t in concatenated_examples.items()
         }
         result["labels"] = result["input_ids"].copy()
         return result
+
     # with training_args.main_process_first(desc="dataset map tokenization and grouping"):
-        # lm_datasets = []
-        # path = Path(data_args.dataset_dir)
-        # files = [file.name for file in path.glob("*.txt")]
-        # if training_args.debug_mode is True:
-        #     files = [files[0]]
-        # for idx, file in enumerate(files):
-        #     data_file = os.path.join(path, file)
-        #     filename = ''.join(file.split(".")[:-1])
-        #     cache_path = os.path.join(data_args.data_cache_dir, filename)
-        #     os.makedirs(cache_path, exist_ok=True)
-        #     try:
-        #         processed_dataset = datasets.load_from_disk(cache_path, keep_in_memory=False)
-        #         logger.info(f'training datasets-{filename} has been loaded from disk')
-        #     except Exception:
-        #         cache_dir = os.path.join(data_args.data_cache_dir, filename+"_text")
-        #         os.makedirs(cache_dir, exist_ok=True)
-        #         raw_dataset = load_dataset("text", data_files=data_file, cache_dir=cache_dir, keep_in_memory=False)
-        #         logger.info(f"{file} has been loaded")
-        #         tokenized_dataset = raw_dataset.map(
-        #             tokenize_function,
-        #             batched=True,
-        #             num_proc=data_args.preprocessing_num_workers,
-        #             remove_columns="text",
-        #             load_from_cache_file=True,
-        #             keep_in_memory=False,
-        #             cache_file_names = {k: os.path.join(cache_dir, 'tokenized.arrow') for k in raw_dataset},
-        #             desc="Running tokenizer on dataset",
-        #         )
-        #         grouped_datasets = tokenized_dataset.map(
-        #             group_texts,
-        #             batched=True,
-        #             num_proc=data_args.preprocessing_num_workers,
-        #             load_from_cache_file=True,
-        #             keep_in_memory=False,
-        #             cache_file_names = {k: os.path.join(cache_dir, 'grouped.arrow') for k in tokenized_dataset},
-        #             desc=f"Grouping texts in chunks of {block_size}",
-        #         )
-        #         processed_dataset = grouped_datasets
-        #         processed_dataset.save_to_disk(cache_path)
-        #     if idx == 0:
-        #         lm_datasets = processed_dataset['train']
-        #     else:
-        #         assert lm_datasets.features.type == processed_dataset["train"].features.type
-        #         lm_datasets = concatenate_datasets([lm_datasets, processed_dataset["train"]])
+    #     lm_datasets = []
+    #     path = Path(data_args.dataset_dir)
+    #     files = [file.name for file in path.glob("*.txt")]
+    #     if training_args.debug_mode is True:
+    #         files = [files[0]]
+    #     for idx, file in enumerate(files):
+    #         data_file = os.path.join(path, file)
+    #         filename = ''.join(file.split(".")[:-1])
+    #         cache_path = os.path.join(data_args.data_cache_dir, filename)
+    #         os.makedirs(cache_path, exist_ok=True)
+    #         try:
+    #             processed_dataset = datasets.load_from_disk(cache_path, keep_in_memory=False)
+    #             logger.info(f'training datasets-{filename} has been loaded from disk')
+    #         except Exception:
+    #             cache_dir = os.path.join(data_args.data_cache_dir, filename+"_text")
+    #             os.makedirs(cache_dir, exist_ok=True)
+    #             raw_dataset = load_dataset("text", data_files=data_file, cache_dir=cache_dir, keep_in_memory=False)
+    #             logger.info(f"{file} has been loaded")
+    #             tokenized_dataset = raw_dataset.map(
+    #                 tokenize_function,
+    #                 batched=True,
+    #                 num_proc=data_args.preprocessing_num_workers,
+    #                 remove_columns="text",
+    #                 load_from_cache_file=True,
+    #                 keep_in_memory=False,
+    #                 cache_file_names = {k: os.path.join(cache_dir, 'tokenized.arrow') for k in raw_dataset},
+    #                 desc="Running tokenizer on dataset",
+    #             )
+    #             grouped_datasets = tokenized_dataset.map(
+    #                 group_texts,
+    #                 batched=True,
+    #                 num_proc=data_args.preprocessing_num_workers,
+    #                 load_from_cache_file=True,
+    #                 keep_in_memory=False,
+    #                 cache_file_names = {k: os.path.join(cache_dir, 'grouped.arrow') for k in tokenized_dataset},
+    #                 desc=f"Grouping texts in chunks of {block_size}",
+    #             )
+    #             processed_dataset = grouped_datasets
+    #             processed_dataset.save_to_disk(cache_path)
+    #         if idx == 0:
+    #             lm_datasets = processed_dataset['train']
+    #         else:
+    #             assert lm_datasets.features.type == processed_dataset["train"].features.type
+    #             lm_datasets = concatenate_datasets([lm_datasets, processed_dataset["train"]])
+    #     lm_datasets = lm_datasets.train_test_split(test_size = data_args.validation_split_percentage)
 
-        # lm_datasets = lm_datasets.train_test_split(test_size = data_args.validation_split_percentage)
-
-        # files = [
-        #     '/disk0/fin_group/zyn/data_fin/txt_0816/04_element_extraction/04_element_extraction.pretrain.txt',
-        #     '/disk0/fin_group/zyn/data_fin/txt_0816/05_knowledge_base/05_knowledge_base.txt',
-        #     '/disk0/fin_group/zyn/data_fin/txt_0816/txt/merged_00.txt',
-        #     '/disk0/fin_group/zyn/data_fin/txt_0816/txt/merged_02.txt',
-        # ]
-        # cache_dir='/disk0/fin_group/zyn/data_fin/txt_0816/cache'
-        # lm_datasets = []
-        # for idx, file in enumerate(files):
-        #     print(file)
-        #     file = Path(file)
-        #     file_dir = file.parent
-        #     if cache_dir is None:
-        #         cache_dir = file_dir
-        #     else:
-        #         cache_dir = Path(cache_dir)
-        #     file_name = file.stem
-        #     arrow_cache_path = cache_dir / file_name
-        #     arrow_cache_path.mkdir(parents=True, exist_ok=True)
-
-        #     processed_dataset = datasets.load_from_disk(str(arrow_cache_path), keep_in_memory=False)
-        #     logger.info(f'training datasets-{file_name} has been loaded from disk')
-        #     if idx == 0:
-        #         lm_datasets = processed_dataset['train']
-        #     else:
-        #         assert lm_datasets.features.type == processed_dataset["train"].features.type
-        #         lm_datasets = concatenate_datasets([lm_datasets, processed_dataset["train"]])
-        # lm_datasets = lm_datasets.train_test_split(test_size = data_args.validation_split_percentage, seed=1234)
-            
     if training_args.do_train:
         # train_dataset = lm_datasets['train']
         # my code
-        lm_datasets = datasets.load_from_disk(data_args.dataset_dir, keep_in_memory=False)
+        train_dataset = datasets.load_from_disk(data_args.dataset_dir + '/train', keep_in_memory=False)
+        # train_dataset = lm_datasets['train']
         logger.info(f'training datasets (train split)-{data_args.dataset_dir} has been loaded from disk')
-        train_dataset = lm_datasets['train']
         train_dataset.set_format('torch')
 
         if data_args.max_train_samples is not None:
@@ -595,9 +566,9 @@ def main():
     if training_args.do_eval:
         # eval_dataset = lm_datasets["test"]
         # my code
-        lm_datasets = datasets.load_from_disk(data_args.dataset_dir, keep_in_memory=False)
+        eval_dataset = datasets.load_from_disk(data_args.dataset_dir + '/test', keep_in_memory=False)
+        # eval_dataset = lm_datasets['test']
         logger.info(f'evaluation datasets (test split)-{data_args.dataset_dir} has been loaded from disk')
-        eval_dataset = lm_datasets['test']
         eval_dataset.set_format('torch')
 
         if data_args.max_eval_samples is not None:
@@ -621,7 +592,7 @@ def main():
             load_in_8bit_skip_modules=load_in_8bit_skip_modules,
             bnb_4bit_compute_dtype=compute_dtype,
             bnb_4bit_use_double_quant=training_args.double_quant,
-            bnb_4bit_quant_type=training_args.quant_type # {'fp4', 'nf4'}
+            bnb_4bit_quant_type=training_args.quant_type  # {'fp4', 'nf4'}
         )
     else:
         load_in_4bit = False
@@ -635,7 +606,7 @@ def main():
             if model_args.torch_dtype in ["auto", None]
             else getattr(torch, model_args.torch_dtype)
         )
-        device_map = {"":int(os.environ.get("LOCAL_RANK") or 0)}
+        device_map = {"": int(os.environ.get("LOCAL_RANK") or 0)}
         model = LlamaForCausalLM.from_pretrained(
             model_args.model_name_or_path,
             from_tf=bool(".ckpt" in model_args.model_name_or_path),
@@ -654,7 +625,7 @@ def main():
     else:
         model = AutoModelForCausalLM.from_config(config)
         n_params = sum({p.data_ptr(): p.numel() for p in model.parameters()}.values())
-        logger.info(f"Training new model from scratch - Total size={n_params/2**20:.2f}M params")
+        logger.info(f"Training new model from scratch - Total size={n_params / 2 ** 20:.2f}M params")
     if training_args.load_in_kbits in [4, 8]:
         model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=training_args.gradient_checkpointing)
     model.config.use_cache = False
@@ -697,13 +668,14 @@ def main():
             lambda self, *_, **__: get_peft_model_state_dict(self, old_state_dict())
         ).__get__(model, type(model))
     if not training_args.full_finetuning and training_args.gradient_checkpointing and \
-        (not model.modules_to_save or 'embed_tokens' not in model.modules_to_save):
+            (not model.modules_to_save or 'embed_tokens' not in model.modules_to_save):
         # enable requires_grad to avoid exception during backward pass when using gradient_checkpoint without tuning embed.
         if hasattr(model.base_model, "enable_input_require_grads"):
             model.base_model.enable_input_require_grads()
         elif hasattr(model.base_model, "get_input_embeddings"):
             def make_inputs_require_grad(_module, _input, _output):
                 _output.requires_grad_(True)
+
             model.base_model.get_input_embeddings().register_forward_hook(make_inputs_require_grad)
 
     # Initialize our Trainer
@@ -720,7 +692,7 @@ def main():
         else None,
     )
 
-    if not training_args.full_finetuning: # lora时
+    if not training_args.full_finetuning:  # lora时
         trainer.add_callback(SavePeftModelCallback)
 
     # Training
@@ -741,7 +713,7 @@ def main():
 
         trainer.log_metrics("train", metrics)
         trainer.save_metrics("train", metrics)
-        if training_args.full_finetuning: # 全量时
+        if training_args.full_finetuning:  # 全量时
             trainer.save_model()
         trainer.save_state()
 
