@@ -66,12 +66,12 @@ def group_texts(examples):
     return result
 
 
-def gen_arrow(files: List, output_dir):
+def gen_arrow(files: List, output_dir, merge_arrow_dir='merge_arrow_data'):
     lm_datasets = []
     cache_load_dir = os.path.join(output_dir, 'cache_load')  # 存放各个小文件的load即(load_dataset)产生的cache目录
     cache_map_dir = os.path.join(output_dir, 'cache_map')  # 存放各个小文件的map产生的cache目录
     arrow_dir = os.path.join(output_dir, 'single_arrow_data')  # 存放每个处理好的Dataset/DatasetDict的arrow格式文件的目录
-    merge_arrow_dir = os.path.join(output_dir, 'merge_arrow_data')  # 存放合并后的Dataset/DatasetDict的arrow格式文件的目录
+    merge_arrow_dir = os.path.join(output_dir, merge_arrow_dir)  # 存放合并后的Dataset/DatasetDict的arrow格式文件的目录
     (os.makedirs(d, exist_ok=True) for d in [cache_load_dir, cache_map_dir, arrow_dir])
 
     for idx, file in enumerate(files):
@@ -138,7 +138,7 @@ def gen_arrow(files: List, output_dir):
         lm_datasets = lm_datasets.train_test_split(test_size=validation_split_percentage, seed=1234)
         logger.info(f'Finish split train and test. merge output datasets: {lm_datasets}')
 
-    lm_datasets.save_to_disk(merge_arrow_dir, num_proc=1)  # 存储就不需要多线程了，默认按每个分片shard最大500M自动分片存
+    lm_datasets.save_to_disk(merge_arrow_dir, num_proc=32)  # 存储也需要多线程不然很慢，默认按每个分片shard最大500M自动分片存，个数取分片后数量和线程数最大值
     logger.info(f'Finish saved merge output datasets path: {merge_arrow_dir}')
 
     with open(output_dir + f'/{Path(tokenizer_path).stem}.info', 'w', encoding='U8') as f:

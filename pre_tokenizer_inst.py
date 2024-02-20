@@ -66,12 +66,12 @@ def tokenize_function(examples):
     return results
 
 
-def gen_arrow(files: List, output_dir):
+def gen_arrow(files: List, output_dir, merge_arrow_dir='merge_arrow_data'):
     lm_datasets = []
     cache_load_dir = os.path.join(output_dir, 'cache_load')
     cache_map_dir = os.path.join(output_dir, 'cache_map')
     arrow_dir = os.path.join(output_dir, 'single_arrow_data')
-    merge_arrow_dir = os.path.join(output_dir, 'merge_arrow_data')
+    merge_arrow_dir = os.path.join(output_dir, merge_arrow_dir)
     (os.makedirs(d, exist_ok=True) for d in [cache_load_dir, cache_map_dir, arrow_dir])
 
     for idx, file in enumerate(files):
