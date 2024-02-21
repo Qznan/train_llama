@@ -57,7 +57,7 @@ def group_texts(examples):
         for k, t in concatenated_examples.items()
     }
 
-    # # customed 保留最后的遗留数据 small remainde
+    # # customed 保留最后的遗留数据 small remained
     # if len(concatenated_examples[list(examples.keys())[0]]) % block_size != 0:
     #     for k in result.keys():
     #         result[k] += [concatenated_examples[k][-block_size:]]
@@ -67,11 +67,14 @@ def group_texts(examples):
 
 
 def gen_arrow(files: List, output_dir, merge_arrow_dir='merge_arrow_data'):
+    """
+    merge_arrow_dir=None 不进行合并操作
+    """
     lm_datasets = []
     cache_load_dir = os.path.join(output_dir, 'cache_load')  # 存放各个小文件的load即(load_dataset)产生的cache目录
     cache_map_dir = os.path.join(output_dir, 'cache_map')  # 存放各个小文件的map产生的cache目录
     arrow_dir = os.path.join(output_dir, 'single_arrow_data')  # 存放每个处理好的Dataset/DatasetDict的arrow格式文件的目录
-    merge_arrow_dir = os.path.join(output_dir, merge_arrow_dir)  # 存放合并后的Dataset/DatasetDict的arrow格式文件的目录
+    merge_arrow_dir = os.path.join(output_dir, merge_arrow_dir) if merge_arrow_dir is not None else None  # 存放合并后的Dataset/DatasetDict的arrow格式文件的目录
     (os.makedirs(d, exist_ok=True) for d in [cache_load_dir, cache_map_dir, arrow_dir])
 
     for idx, file in enumerate(files):
@@ -87,7 +90,7 @@ def gen_arrow(files: List, output_dir, merge_arrow_dir='merge_arrow_data'):
         except Exception:
             """ load_dataset https://huggingface.co/docs/datasets/v2.16.1/en/package_reference/loading_methods#datasets.packaged_modules.text.TextConfig """
             _cache_load_dir = os.path.join(cache_load_dir, file_name)  # 单个文件的load即(load_dataset)产生的cache目录
-            raw_dataset = load_dataset("text", data_files=file, cache_dir=cache_load_dir, keep_in_memory=False,
+            raw_dataset = load_dataset("text", data_files=file, cache_dir=_cache_load_dir, keep_in_memory=False,
                                        keep_linebreaks=False,  # 是否保持\n
                                        sample_by='line'  # line(\n分割) | paragraph(\n\n分割) | document(整个文件整篇一起)
                                        )  # 默认是生成只有train split的DatasetDict
@@ -131,6 +134,10 @@ def gen_arrow(files: List, output_dir, merge_arrow_dir='merge_arrow_data'):
             assert lm_datasets.features.type == processed_dataset["train"].features.type
             lm_datasets = concatenate_datasets([lm_datasets, processed_dataset["train"]])
 
+    if merge_arrow_dir is None:
+        logger.info(f'Finish process all files. not merge because merge_arrow_dir is None')
+        return
+
     logger.info(f'Finish process all files. merge output datasets: {lm_datasets}')
 
     if validation_split_percentage is not None:
@@ -144,6 +151,21 @@ def gen_arrow(files: List, output_dir, merge_arrow_dir='merge_arrow_data'):
     with open(output_dir + f'/{Path(tokenizer_path).stem}.info', 'w', encoding='U8') as f:
         f.write(tokenizer_path + '\n')
 
+def inspect_load_data(output_dir, file):
+    cache_load_dir = os.path.join(output_dir, 'cache_load')  # 存放各个小文件的load即(load_dataset)产生的cache目录
+    file_name = Path(file).stem
+    _cache_load_dir = os.path.join(cache_load_dir, file_name)  # 单个文件的load即(load_dataset)产生的cache目录
+    raw_dataset = load_dataset("text", data_files=file, cache_dir=_cache_load_dir, keep_in_memory=False,
+                                keep_linebreaks=False,  # 是否保持\n
+                                sample_by='line'  # line(\n分割) | paragraph(\n\n分割) | document(整个文件整篇一起)
+                                )  # 默认是生成只有train split的DatasetDict
+    logger.info(f"{file} has finished loaded, [load] cache file: {_cache_load_dir}")
+    if 'train' in raw_dataset:
+        raw_dataset = raw_dataset['train']
+    print(raw_dataset)
+    # print(repr(raw_dataset[0]['text'][:10000]))
+    print(repr(raw_dataset[:10]['text']))
+    exit(0)
 
 if __name__ == '__main__':
     validation_split_percentage = None
@@ -160,7 +182,6 @@ if __name__ == '__main__':
     }
 
     tokenizer_path = 'tokenizer_chinese_llama'  # 使用chinese_alpca2词表
-    tokenizer_path = 'tokenizer_chinese_llama'
 
     tokenizer = LlamaTokenizer.from_pretrained(tokenizer_path, **tokenizer_kwargs)
     tokenizer.add_eos_token = True  # 预训练有，让模型加bos和eos
@@ -184,3 +205,8 @@ if __name__ == '__main__':
     merge_arrow_data 将上述所有文件合并 并且train test split.
     """
     gen_arrow(files, output_dir)
+    # gen_arrow(files, output_dir, merge_arrow_dir='/data3/fin_group/merge_arrow_data1')
+    # gen_arrow(files, output_dir, merge_arrow_dir=None)
+
+    # inspect_load_data(output_dir, files[0])
+
