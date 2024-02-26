@@ -78,6 +78,10 @@ def gen_arrow(files: List, output_dir, merge_arrow_dir='merge_arrow_data'):
     (os.makedirs(d, exist_ok=True) for d in [cache_load_dir, cache_map_dir, arrow_dir])
 
     for idx, file in enumerate(files):
+        if not isinstance(file, list):
+            file = [file, {}]
+        file, load_kwargs = file
+
         logger.info(f'loading {file}...')
         file_name = Path(file).stem
         # _arrow_dir = os.path.join(arrow_dir, file_name + f'_{block_size}')
@@ -90,10 +94,19 @@ def gen_arrow(files: List, output_dir, merge_arrow_dir='merge_arrow_data'):
         except Exception:
             """ load_dataset https://huggingface.co/docs/datasets/v2.16.1/en/package_reference/loading_methods#datasets.packaged_modules.text.TextConfig """
             _cache_load_dir = os.path.join(cache_load_dir, file_name)  # 单个文件的load即(load_dataset)产生的cache目录
-            raw_dataset = load_dataset("text", data_files=file, cache_dir=_cache_load_dir, keep_in_memory=False,
-                                       keep_linebreaks=False,  # 是否保持\n
-                                       sample_by='line'  # line(\n分割) | paragraph(\n\n分割) | document(整个文件整篇一起)
-                                       )  # 默认是生成只有train split的DatasetDict
+            if file.endswith('txt'):
+                kwargs = dict(
+                    keep_linebreaks=False,  # 是否保持\n
+                    sample_by='line'  # line(\n分割) | paragraph(\n\n分割) | document(整个文件整篇一起)
+                ).update(load_kwargs)
+                logger.info(f"load_kwargs: {load_kwargs}")
+                raw_dataset = load_dataset("text", data_files=file, cache_dir=_cache_load_dir, keep_in_memory=False, **kwargs)  # 默认是生成只有train split的DatasetDict
+            elif file.endswith('json') or file.endswith('jsonl'):
+                raw_dataset = load_dataset("json", data_files=file, cache_dir=_cache_load_dir, keep_in_memory=False)  # 默认是生成只有train split的DatasetDict
+                column_names = list(raw_dataset['train'].column_names)
+                assert 'text' in column_names, 'json file must contain "text" key'
+                columns_to_remove = [c for c in column_names if c not in["text"]]
+                raw_dataset['train'] = raw_dataset['train'].remove_columns(columns_to_remove)
             logger.info(f"{file} has finished loaded, [load] cache file: {_cache_load_dir}")
 
             _cache_map_dir = os.path.join(cache_map_dir, file_name)  # 单个文件的map产生的cache目录
@@ -152,14 +165,29 @@ def gen_arrow(files: List, output_dir, merge_arrow_dir='merge_arrow_data'):
         f.write(tokenizer_path + '\n')
 
 def inspect_load_data(output_dir, file):
+    if not isinstance(file, list):
+        file = [file, {}]
+    file, load_kwargs = file
+
     cache_load_dir = os.path.join(output_dir, 'cache_load')  # 存放各个小文件的load即(load_dataset)产生的cache目录
     file_name = Path(file).stem
     _cache_load_dir = os.path.join(cache_load_dir, file_name)  # 单个文件的load即(load_dataset)产生的cache目录
-    raw_dataset = load_dataset("text", data_files=file, cache_dir=_cache_load_dir, keep_in_memory=False,
-                                keep_linebreaks=False,  # 是否保持\n
-                                sample_by='line'  # line(\n分割) | paragraph(\n\n分割) | document(整个文件整篇一起)
-                                )  # 默认是生成只有train split的DatasetDict
+
+    if file.endswith('txt'):
+        kwargs = dict(
+            keep_linebreaks=False,  # 是否保持\n
+            sample_by='line'  # line(\n分割) | paragraph(\n\n分割) | document(整个文件整篇一起)
+        ).update(load_kwargs)
+        logger.info(f"load_kwargs: {load_kwargs}")
+        raw_dataset = load_dataset("text", data_files=file, cache_dir=_cache_load_dir, keep_in_memory=False, **kwargs)  # 默认是生成只有train split的DatasetDict
+    elif file.endswith('json') or file.endswith('jsonl'):
+        raw_dataset = load_dataset("json", data_files=file, cache_dir=_cache_load_dir, keep_in_memory=False)  # 默认是生成只有train split的DatasetDict
+        column_names = list(raw_dataset['train'].column_names)
+        assert 'text' in column_names, 'json file must contain "text" key'
+        columns_to_remove = [c for c in column_names if c not in["text"]]
+        raw_dataset['train'] = raw_dataset['train'].remove_columns(columns_to_remove)
     logger.info(f"{file} has finished loaded, [load] cache file: {_cache_load_dir}")
+
     if 'train' in raw_dataset:
         raw_dataset = raw_dataset['train']
     print(raw_dataset)
@@ -191,8 +219,9 @@ if __name__ == '__main__':
     root_path = './'
 
     files = [
-        f'{root_path}pt_data/test100_1.txt',
-        f'{root_path}pt_data/test100_2.txt',
+        f'{root_path}pt_data/test1w_1.txt',
+        f'{root_path}pt_data/test1w_2.txt',
+        # [f'{root_path}pt_data/test1w_2.txt', dict(keep_linebreaks=True, sample_by='document')]],
     ]
 
     output_dir = 'pt_data/0111'
