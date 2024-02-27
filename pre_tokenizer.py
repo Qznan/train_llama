@@ -35,6 +35,11 @@ tok_logger = transformers.utils.logging.get_logger("transformers.tokenization_ut
 def tokenize_function(examples):
     with CaptureLogger(tok_logger) as cl:
         output = tokenizer(examples["text"])  # 因为add_eos_token=True,所以将会增加sos和eos即 <s>  </s>给每行句子
+
+    # 当tokenizer(batch_sentences, padding=True)时attention_mask才会有1和0
+    # 这里都是1.所以可以不要。因为后续model.forward里面默认的attention_mask=None则是都是1。节省了arrow文件一个int8空间
+    # output.pop('attention_mask')
+
     # clm input could be much much longer than block_size
     if "Token indices sequence length is longer than the" in cl.out:
         tok_logger.warning(
@@ -82,8 +87,8 @@ def gen_arrow(files: List, output_dir, merge_arrow_dir='merge_arrow_data'):
 
     for idx, file in enumerate(files):
         if not isinstance(file, list):
-            file = [file, {}]
-        file, load_kwargs = file
+            file = [file, 1, {}]
+        file, weigth, load_kwargs = file  # 文件,权重,加载参数
 
         logger.info(f'loading {file}...')
         file_name = Path(file).stem
@@ -150,8 +155,10 @@ def gen_arrow(files: List, output_dir, merge_arrow_dir='merge_arrow_data'):
         if idx == 0:
             lm_datasets = processed_dataset['train']
         else:
+            if not lm_datasets.features.type == processed_dataset["train"].features.type:  # 兼容之前的int64labels
+                processed_dataset = processed_dataset.cast(lm_datasets.features.copy())
             assert lm_datasets.features.type == processed_dataset["train"].features.type
-            lm_datasets = concatenate_datasets([lm_datasets, processed_dataset["train"]])
+            lm_datasets = concatenate_datasets([lm_datasets] + [processed_dataset["train"]] * weigth)
 
     if merge_arrow_dir is None:
         logger.info(f'Finish process all files. not merge because merge_arrow_dir is None')
@@ -227,7 +234,7 @@ if __name__ == '__main__':
     files = [
         f'{root_path}pt_data/test1w_1.txt',
         f'{root_path}pt_data/test1w_2.txt',
-        # [f'{root_path}pt_data/test1w_2.txt', dict(keep_linebreaks=True, sample_by='document')]],
+        # [f'{root_path}pt_data/test1w_2.txt', 10, dict(keep_linebreaks=True, sample_by='document')],
     ]
 
     output_dir = 'pt_data/0111'
