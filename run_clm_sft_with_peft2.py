@@ -26,11 +26,11 @@ import math
 import os
 import sys
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import *
 from pathlib import Path
 import datasets
 import torch
-from build_dataset import build_instruction_dataset, DataCollatorForSupervisedDataset
+# from build_dataset import build_instruction_dataset, DataCollatorForSupervisedDataset
 import transformers
 from transformers import (
     CONFIG_MAPPING,
@@ -53,8 +53,27 @@ from peft.tuners.lora import LoraLayer
 
 from transformers.trainer_utils import PREFIX_CHECKPOINT_DIR
 
-
 require_version("datasets>=1.8.0", "To fix: pip install -r examples/pytorch/language-modeling/requirements.txt")
+
+IGNORE_INDEX = -100
+
+@dataclass
+class DataCollatorForSupervisedDataset(object):
+    """Collate examples for supervised fine-tuning."""
+
+    tokenizer: transformers.PreTrainedTokenizer
+
+    def __call__(self, instances: Sequence[Dict]) -> Dict[str, torch.Tensor]:
+        # input_ids, labels = tuple([instance[key] for instance in instances] for key in ("input_ids", "labels"))
+        input_ids, labels = zip(*[(instance['input_ids'], instance['labels']) for instance in instances])
+        # pad_sequence要求input_ids是list of tenosr。在之前的processed_dataset.set_format('torch')已经转了
+        input_ids = torch.nn.utils.rnn.pad_sequence(input_ids, batch_first=True, padding_value=self.tokenizer.pad_token_id)
+        labels = torch.nn.utils.rnn.pad_sequence(labels, batch_first=True, padding_value=IGNORE_INDEX)
+        return dict(
+            input_ids=input_ids,
+            labels=labels,
+            attention_mask=input_ids.ne(self.tokenizer.pad_token_id),
+        )
 
 
 class SavePeftModelCallback(transformers.TrainerCallback):
@@ -234,24 +253,23 @@ class DataTrainingArguments:
 
 @dataclass
 class MyTrainingArguments(TrainingArguments):
-    trainable : Optional[str] = field(default="q_proj,v_proj")
-    lora_rank : Optional[int] = field(default=8)
-    lora_dropout : Optional[float] = field(default=0.1)
-    lora_alpha : Optional[float] = field(default=32.)
-    modules_to_save : Optional[str] = field(default=None)
-    peft_path : Optional[str] = field(default=None)
-    use_flash_attention_2 : Optional[bool] = field(default=False)
+    trainable: Optional[str] = field(default="q_proj,v_proj")
+    lora_rank: Optional[int] = field(default=8)
+    lora_dropout: Optional[float] = field(default=0.1)
+    lora_alpha: Optional[float] = field(default=32.)
+    modules_to_save: Optional[str] = field(default=None)
+    peft_path: Optional[str] = field(default=None)
+    use_flash_attention_2: Optional[bool] = field(default=False)
     double_quant: Optional[bool] = field(default=True)
     quant_type: Optional[str] = field(default="nf4")
     load_in_kbits: Optional[int] = field(default=16)
-    full_finetuning : Optional[bool] = field(default=False)
+    full_finetuning: Optional[bool] = field(default=False)
 
 
 logger = logging.getLogger(__name__)
 
 
 def main():
-
     parser = HfArgumentParser((ModelArguments, DataTrainingArguments, MyTrainingArguments))
     if len(sys.argv) == 2 and sys.argv[1].endswith(".json"):
         # If we pass only one argument to the script and it's the path to a json file,
@@ -263,10 +281,9 @@ def main():
     send_example_telemetry("run_clm", model_args, data_args)
 
     # Setup logging
-    logging.basicConfig(format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",datefmt="%m/%d/%Y %H:%M:%S",
-        level=logging.INFO,  # if training_args.local_rank in [-1, 0] else logging.WARN,
-        handlers=[logging.StreamHandler(sys.stdout)],)
-
+    logging.basicConfig(format="%(asctime)s - %(levelname)s - %(name)s - %(message)s", datefmt="%m/%d/%Y %H:%M:%S",
+                        level=logging.INFO,  # if training_args.local_rank in [-1, 0] else logging.WARN,
+                        handlers=[logging.StreamHandler(sys.stdout)], )
 
     if training_args.should_log:
         # The default of training_args.log_level is passive, so we set log level at info here to have that default.
@@ -283,7 +300,7 @@ def main():
     logger.info(f'===training_args===:\n{training_args}\n')
     logger.info(f'===data_args===:\n{data_args}\n')
     logger.info(f'===model_args===:\n{model_args}\n')
-    
+
     # Log on each process the small summary:
     logger.warning(
         f"Process rank: {training_args.local_rank}, device: {training_args.device}, n_gpu: {training_args.n_gpu}"
@@ -346,7 +363,7 @@ def main():
     #                      "Please use Chinese-LLaMA-2 tokenizer.")
 
     data_collator = DataCollatorForSupervisedDataset(tokenizer=tokenizer)
-    eval_dataset=None
+    eval_dataset = None
     train_dataset = None
 
     if training_args.do_train:
@@ -411,7 +428,7 @@ def main():
             load_in_8bit_skip_modules=load_in_8bit_skip_modules,
             bnb_4bit_compute_dtype=compute_dtype,
             bnb_4bit_use_double_quant=training_args.double_quant,
-            bnb_4bit_quant_type=training_args.quant_type # {'fp4', 'nf4'}
+            bnb_4bit_quant_type=training_args.quant_type  # {'fp4', 'nf4'}
         )
     else:
         load_in_4bit = False
@@ -419,7 +436,7 @@ def main():
         quantization_config = None
     if quantization_config is not None:
         logger.info(f"quantization_config:{quantization_config.to_dict()}")
-    device_map = {"":int(os.environ.get("LOCAL_RANK") or 0)}
+    device_map = {"": int(os.environ.get("LOCAL_RANK") or 0)}
 
     try:  # mycode
         import json
@@ -486,13 +503,14 @@ def main():
         ).__get__(model, type(model))
 
     if not training_args.full_finetuning and training_args.gradient_checkpointing and \
-        (not model.modules_to_save or 'embed_tokens' not in model.modules_to_save):
+            (not model.modules_to_save or 'embed_tokens' not in model.modules_to_save):
         # enable requires_grad to avoid exception during backward pass when using gradient_checkpoint without tuning embed.
         if hasattr(model.base_model, "enable_input_require_grads"):
             model.base_model.enable_input_require_grads()
         elif hasattr(model.base_model, "get_input_embeddings"):
             def make_inputs_require_grad(_module, _input, _output):
                 _output.requires_grad_(True)
+
             model.base_model.get_input_embeddings().register_forward_hook(make_inputs_require_grad)
 
     # Initialize our Trainer
@@ -505,7 +523,7 @@ def main():
         data_collator=data_collator,
     )
 
-    if not training_args.full_finetuning: # lora时
+    if not training_args.full_finetuning:  # lora时
         trainer.add_callback(SavePeftModelCallback)
 
     # Training
@@ -523,7 +541,7 @@ def main():
 
         trainer.log_metrics("train", metrics)
         trainer.save_metrics("train", metrics)
-        if training_args.full_finetuning: # 全量时
+        if training_args.full_finetuning:  # 全量时
             trainer.save_model()
         trainer.save_state()
 
@@ -532,7 +550,7 @@ def main():
         logger.info("*** Evaluate ***")
 
         metrics = trainer.evaluate()
-        metrics["eval_samples"] =len(eval_dataset)
+        metrics["eval_samples"] = len(eval_dataset)
         try:
             perplexity = math.exp(metrics["eval_loss"])
         except OverflowError:

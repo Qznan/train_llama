@@ -6,7 +6,6 @@ import datasets
 from datasets import load_dataset, concatenate_datasets
 import transformers
 from transformers import LlamaTokenizer, AutoTokenizer
-import torch
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +45,7 @@ def tokenize_function(examples):
     tokenized_sources = tokenizer(sources, return_attention_mask=False)  # 句头加bos即<s>
     tokenized_targets = tokenizer(targets, return_attention_mask=False, add_special_tokens=False)  # 句头不加bos即<s>
     # 因为是分开来token所以target前面都是以▁A 相当于空格开头[/INST] A
-    # 其实最终是相当于sources和targets加了空格去拼接  真无语了 
+    # 其实最终是相当于sources和targets加了空格去拼接  真无语了
     # <s>[INST]......[/INST] ABCxxx
 
     all_input_ids = []
@@ -56,8 +55,8 @@ def tokenize_function(examples):
         if len(s) > max_input_length:
             s = s[:max_input_length]
 
-        input_ids = torch.LongTensor(s + t)[:max_seq_length]
-        labels = torch.LongTensor([IGNORE_INDEX] * len(s) + t)[:max_seq_length]
+        input_ids = (s + t)[:max_seq_length]
+        labels = ([IGNORE_INDEX] * len(s) + t)[:max_seq_length]
         assert len(input_ids) == len(labels)
         all_input_ids.append(input_ids)
         all_labels.append(labels)
@@ -71,7 +70,7 @@ def gen_arrow(files: List, output_dir, merge_arrow_dir='merge_arrow_data'):
     cache_load_dir = os.path.join(output_dir, 'cache_load')
     cache_map_dir = os.path.join(output_dir, 'cache_map')
     arrow_dir = os.path.join(output_dir, 'single_arrow_data')
-    merge_arrow_dir = os.path.join(output_dir, merge_arrow_dir)
+    merge_arrow_dir = os.path.join(output_dir, merge_arrow_dir) if merge_arrow_dir is not None else None  # 存放合并后的Dataset/DatasetDict的arrow格式文件的目录
     (os.makedirs(d, exist_ok=True) for d in [cache_load_dir, cache_map_dir, arrow_dir])
 
     for idx, file in enumerate(files):
@@ -90,9 +89,10 @@ def gen_arrow(files: List, output_dir, merge_arrow_dir='merge_arrow_data'):
             logger.info(f"{file} has finished loaded, load cache file: {_cache_load_dir}")
 
             # 去除其余字段
-            column_names = list(raw_dataset['train'].column_names)
-            columns_to_remove = [c for c in column_names if c not in["instruction", "input", "output"]]
-            raw_dataset['train'] = raw_dataset['train'].remove_columns(columns_to_remove)
+            # column_names = list(raw_dataset['train'].column_names)
+            # columns_to_remove = [c for c in column_names if c not in ["instruction", "input", "output"]]
+            # raw_dataset['train'] = raw_dataset['train'].remove_columns(columns_to_remove)
+            raw_dataset['train'] = raw_dataset['train'].select_columns(["instruction", "input", "output"])
 
             _cache_map_dir = os.path.join(cache_map_dir, file_name)  # 单个文件的cache目录
             os.makedirs(_cache_map_dir, exist_ok=True)
@@ -118,13 +118,17 @@ def gen_arrow(files: List, output_dir, merge_arrow_dir='merge_arrow_data'):
             assert lm_datasets.features.type == processed_dataset["train"].features.type
             lm_datasets = concatenate_datasets([lm_datasets, processed_dataset["train"]])
 
+    if merge_arrow_dir is None:
+        logger.info(f'Finish process all files. not merge because merge_arrow_dir is None')
+        return
+
     logger.info(f'Finish process all files. merge output datasets: {lm_datasets}')
 
     if validation_split_percentage is not None:
         logger.info(f'split train and test, test ratio or num: {validation_split_percentage} seed=1234')
         lm_datasets = lm_datasets.train_test_split(test_size=validation_split_percentage, seed=1234)
+        logger.info(f'Finish split train and test. merge output datasets: {lm_datasets}')
 
-    logger.info(f'Finish split train and test. merge output datasets: {lm_datasets}')
     lm_datasets.save_to_disk(merge_arrow_dir, num_proc=1)
     logger.info(f'Finish saved merge output datasets path: {merge_arrow_dir}')
 
@@ -153,7 +157,6 @@ if __name__ == '__main__':
     }
 
     tokenizer_path = 'tokenizer_chinese_llama'  # 使用chinese_alpca2词表
-    tokenizer_path = 'tokenizer_chinese_llama'
 
     tokenizer = LlamaTokenizer.from_pretrained(tokenizer_path, **tokenizer_kwargs)
     # tokenizer.add_eos_token = True  # 指令微调没有，只让模型加bos
@@ -175,3 +178,4 @@ if __name__ == '__main__':
     merge_arrow_data 将上述所有文件合并 并且train test split.
     """
     gen_arrow(files, output_dir)
+    # gen_arrow(files, output_dir, merge_arrow_dir=None)
