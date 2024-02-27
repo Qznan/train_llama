@@ -3,6 +3,7 @@ from pathlib import Path
 from typing import *
 import os, argparse, sys
 from itertools import chain
+import numpy as np
 import datasets
 from datasets import load_dataset, concatenate_datasets
 import transformers
@@ -13,6 +14,7 @@ from transformers import (
     LlamaTokenizer,
     AutoTokenizer,
 )
+# import ipdb
 from transformers.testing_utils import CaptureLogger
 
 logger = logging.getLogger(__name__)
@@ -62,7 +64,8 @@ def group_texts(examples):
     #     for k in result.keys():
     #         result[k] += [concatenated_examples[k][-block_size:]]
 
-    result["labels"] = result["input_ids"].copy()
+    # result["labels"] = result["input_ids"].copy()  # 这样会使得labels为int64尽管input_ids是int32，浪费空间
+    result["labels"] = np.array(result["input_ids"], dtype='int32')  # 这样出来后的dataset.feature中可以看到是int32
     return result
 
 
@@ -88,6 +91,7 @@ def gen_arrow(files: List, output_dir, merge_arrow_dir='merge_arrow_data'):
         _arrow_dir = os.path.join(arrow_dir, file_name)  # 每单个处理好的Dataset/DatasetDict的arrow格式文件的目录。e.g.single_arrow_data/test1w_1/
 
         try:
+            # assert 1 == 2 强制重新生成
             processed_dataset = datasets.load_from_disk(_arrow_dir, keep_in_memory=False)  # e.g.single_arrow_data/test1w_1/
             logger.info(f'training datasets-{file_name} has been loaded from disk')
 
@@ -98,15 +102,17 @@ def gen_arrow(files: List, output_dir, merge_arrow_dir='merge_arrow_data'):
                 kwargs = dict(
                     keep_linebreaks=False,  # 是否保持\n
                     sample_by='line'  # line(\n分割) | paragraph(\n\n分割) | document(整个文件整篇一起)
-                ).update(load_kwargs)
-                logger.info(f"load_kwargs: {load_kwargs}")
+                )
+                kwargs.update(load_kwargs)
+                logger.info(f"load_kwargs: {kwargs}")
                 raw_dataset = load_dataset("text", data_files=file, cache_dir=_cache_load_dir, keep_in_memory=False, **kwargs)  # 默认是生成只有train split的DatasetDict
             elif file.endswith('json') or file.endswith('jsonl'):
                 raw_dataset = load_dataset("json", data_files=file, cache_dir=_cache_load_dir, keep_in_memory=False)  # 默认是生成只有train split的DatasetDict
                 column_names = list(raw_dataset['train'].column_names)
                 assert 'text' in column_names, 'json file must contain "text" key'
-                columns_to_remove = [c for c in column_names if c not in["text"]]
-                raw_dataset['train'] = raw_dataset['train'].remove_columns(columns_to_remove)
+                # columns_to_remove = [c for c in column_names if c not in["text"]]
+                # raw_dataset['train'] = raw_dataset['train'].remove_columns(columns_to_remove)
+                raw_dataset['train'] = raw_dataset['train'].select_columns(['text'])
             logger.info(f"{file} has finished loaded, [load] cache file: {_cache_load_dir}")
 
             _cache_map_dir = os.path.join(cache_map_dir, file_name)  # 单个文件的map产生的cache目录
@@ -136,8 +142,8 @@ def gen_arrow(files: List, output_dir, merge_arrow_dir='merge_arrow_data'):
                 desc=f"Grouping texts in chunks of {block_size}",
             )
             logger.info(f"{file} has finished map func (group), [map] cache file: {_cache_load_dir}")
-
             processed_dataset = grouped_datasets
+            logger.info(f"preview arrow file {_arrow_dir}:\n{processed_dataset.data}")
             """ save_to_disk https://huggingface.co/docs/datasets/v2.16.1/en/package_reference/main_classes#datasets.Dataset.save_to_disk """
             processed_dataset.save_to_disk(_arrow_dir)  # 处理好的单个arrow输出目录 e.g.single_arrow_data/test1w_1/
 
