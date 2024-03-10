@@ -27,23 +27,48 @@ PROMPT_TEMPLATE = (
     "You are a helpful assistant. 你是一个乐于助人的助手。\n"
     "<</SYS>>\n\n{instruction} [/INST]"
 )
+num_tokens_prompt_prefix = None
+num_tokens_prompt_suffix = None
+
+PROMPT_TEMPLATE_PREFIX = (
+    "[INST] <<SYS>>\n"
+    "You are a helpful assistant. 你是一个乐于助人的助手。\n"
+    "<</SYS>>\n\n"
+)
+
+PROMPT_TEMPLATE_SUFFIX = (
+    "[/INST]"  # 因为是句子开头[会默认被编码为_[，刚好相当于原来的空格
+)
+
+
+def init_prompt_token_num():
+    global tokenzier
+    # 默认微调是句尾不加</s>
+    tokens_prompt_prefix = tokenizer(PROMPT_TEMPLATE_PREFIX, return_attention_mask=False)['input_ids']  # 句头加<s>
+    tokens_prompt_suffix = tokenizer(PROMPT_TEMPLATE_SUFFIX, return_attention_mask=False, add_special_tokens=False)['input_ids']  # 句头不加<s>
+
+    global num_tokens_prompt_prefix
+    global num_tokens_prompt_suffix
+    num_tokens_prompt_prefix = len(tokens_prompt_prefix)
+    num_tokens_prompt_suffix = len(tokens_prompt_suffix)
+    print(f'num_tokens_prompt_prefix: {num_tokens_prompt_prefix}\nnum_tokens_prompt_suffix: {num_tokens_prompt_suffix}')
 
 
 def tokenize_function(examples):
     sources = []
     targets = []
     prompt = PROMPT_TEMPLATE
-    for instruction, input, output in zip(examples['instruction'], examples['input'], examples['output']):
-        if input is not None and input != "":
-            instruction = instruction + '\n' + input
+    for instruction, input_, output in zip(examples['instruction'], examples['input'], examples['output']):
+        if input_ is not None and input_ != "":
+            instruction = instruction + '\n' + input_
         source = prompt.format_map({'instruction': instruction})
         target = f"{output}{tokenizer.eos_token}"  # 这里加了eos即</s>
 
         sources.append(source)
         targets.append(target)
 
-    tokenized_sources = tokenizer(sources, return_attention_mask=False)  # 句头加bos即<s>
-    tokenized_targets = tokenizer(targets, return_attention_mask=False, add_special_tokens=False)  # 句头不加bos即<s>
+    tokenized_sources = tokenizer(sources, return_attention_mask=False)  # 句头加<s>
+    tokenized_targets = tokenizer(targets, return_attention_mask=False, add_special_tokens=False)  # 句头不加<s>
     # 因为是分开来token所以target前面都是以▁A 相当于空格开头[/INST] A
     # 其实最终是相当于sources和targets加了空格去拼接  真无语了
     # <s>[INST]......[/INST] ABCxxx
@@ -51,9 +76,35 @@ def tokenize_function(examples):
     all_input_ids = []
     all_labels = []
     for s, t in zip(tokenized_sources['input_ids'], tokenized_targets['input_ids']):
-        # 保证有output
+        # 保证最终input_ids有target, 所以source和target分别截断
         if len(s) > max_input_length:
-            s = s[:max_input_length]
+            ori_len = len(s)
+            # s = s[:max_input_length]  # 可能导致"\n\n{instruction} [/INST]"这些被截断，故做以下处理：
+
+            max_instruction_length = max_input_length - num_tokens_prompt_prefix - num_tokens_prompt_suffix
+
+            # max_instruction_length 第1)种选择：考虑到指令一般会在最前面或者最后面，最大允许超过1000，优先保留前后各500token
+            if max_instruction_length > 1000:
+                start, end = 500, 500
+                s = s[:num_tokens_prompt_prefix + start + (max_instruction_length - 1000)] + \
+                    s[-num_tokens_prompt_suffix - end:]
+            else:  # 最大不允许1000,则前后对半
+                start = max_instruction_length // 2
+                end = max_instruction_length - start
+                s = s[:num_tokens_prompt_prefix + start] + \
+                    s[-num_tokens_prompt_suffix - end:]
+
+            # # max_instruction_length 第2)种选择：直接保留instruction的前面部分
+            # s = s[:num_tokens_prompt_prefix+max_instruction_length] + \
+            #     s[-num_tokens_prompt_suffix:]
+            # # max_instruction_length 第3)种选择：直接保留instruction的后面部分
+            # s = s[:num_tokens_prompt_prefix] + \
+            #     s[-num_tokens_prompt_suffix-max_instruction_length:]
+
+            assert len(s) <= max_input_length
+            print(f'\nsource length {ori_len} is larger than {max_input_length}, have been truncated to {len(s)}')
+            # print(f'{tokenizer.decode(s)}\n')
+            # input()
 
         input_ids = (s + t)[:max_seq_length]
         labels = ([IGNORE_INDEX] * len(s) + t)[:max_seq_length]
@@ -89,9 +140,6 @@ def gen_arrow(files: List, output_dir, merge_arrow_dir='merge_arrow_data'):
             logger.info(f"{file} has finished loaded, load cache file: {_cache_load_dir}")
 
             # 去除其余字段
-            # column_names = list(raw_dataset['train'].column_names)
-            # columns_to_remove = [c for c in column_names if c not in ["instruction", "input", "output"]]
-            # raw_dataset['train'] = raw_dataset['train'].remove_columns(columns_to_remove)
             raw_dataset['train'] = raw_dataset['train'].select_columns(["instruction", "input", "output"])
 
             _cache_map_dir = os.path.join(cache_map_dir, file_name)  # 单个文件的cache目录
@@ -100,6 +148,7 @@ def gen_arrow(files: List, output_dir, merge_arrow_dir='merge_arrow_data'):
                 tokenize_function,
                 batched=True,
                 num_proc=None,  # 量太小不需要
+                # num_proc=32,
                 remove_columns=["instruction", "input", "output"],
                 load_from_cache_file=True,
                 keep_in_memory=False,
@@ -148,6 +197,9 @@ if __name__ == '__main__':
     max_seq_length = 1024
     max_input_length = 768
     max_target_length = 256
+    max_seq_length = 4096
+    max_input_length = 2048
+    max_target_length = 2048
 
     tokenizer_kwargs = {
         "cache_dir": None,
@@ -160,6 +212,7 @@ if __name__ == '__main__':
 
     tokenizer = LlamaTokenizer.from_pretrained(tokenizer_path, **tokenizer_kwargs)
     # tokenizer.add_eos_token = True  # 指令微调没有，只让模型加bos
+    init_prompt_token_num()
 
     root_path = '/disk0/fin_group/zyn/'
     root_path = '/home/yss/'
