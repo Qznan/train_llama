@@ -21,18 +21,26 @@ transformers.utils.logging.set_verbosity(log_level)
 
 tok_logger = transformers.utils.logging.get_logger("transformers.tokenization_utils_base")
 
-IGNORE_INDEX = -100
-PROMPT_TEMPLATE = (
-    "[INST] <<SYS>>\n"
-    "You are a helpful assistant. 你是一个乐于助人的助手。\n"
-    "<</SYS>>\n\n{instruction} [/INST]"
-)
 num_tokens_prompt_prefix = None
 num_tokens_prompt_suffix = None
 
+
+IGNORE_INDEX = -100
+
+CHINESE_LLAMA = "You are a helpful assistant. 你是一个乐于助人的助手。"
+
+SYSTEM_PROMPT = CHINESE_LLAMA
+
+PROMPT_TEMPLATE = (
+    "[INST] <<SYS>>\n"
+    f"{SYSTEM_PROMPT}\n"
+    "<</SYS>>\n\n"
+    "{instruction} [/INST]"
+)
+
 PROMPT_TEMPLATE_PREFIX = (
     "[INST] <<SYS>>\n"
-    "You are a helpful assistant. 你是一个乐于助人的助手。\n"
+    f"{SYSTEM_PROMPT}\n"
     "<</SYS>>\n\n"
 )
 
@@ -40,6 +48,7 @@ PROMPT_TEMPLATE_SUFFIX = (
     "[/INST]"  # 因为是句子开头[会默认被编码为_[，刚好相当于原来的空格
 )
 
+print(f'===PROMPT_TEMPLATE===:\n{PROMPT_TEMPLATE}\n=====================')
 
 def init_prompt_token_num():
     global tokenzier
@@ -51,7 +60,8 @@ def init_prompt_token_num():
     global num_tokens_prompt_suffix
     num_tokens_prompt_prefix = len(tokens_prompt_prefix)
     num_tokens_prompt_suffix = len(tokens_prompt_suffix)
-    print(f'num_tokens_prompt_prefix: {num_tokens_prompt_prefix}\nnum_tokens_prompt_suffix: {num_tokens_prompt_suffix}')
+    print(f'num_tokens_prompt_prefix: {num_tokens_prompt_prefix}\n'
+            f'num_tokens_prompt_suffix: {num_tokens_prompt_suffix}')
 
 
 def tokenize_function(examples):
@@ -76,38 +86,45 @@ def tokenize_function(examples):
     all_input_ids = []
     all_labels = []
     for s, t in zip(tokenized_sources['input_ids'], tokenized_targets['input_ids']):
-        # 保证最终input_ids有target, 所以source和target分别截断
-        if len(s) > max_input_length:
-            ori_len = len(s)
-            # s = s[:max_input_length]  # 可能导致"\n\n{instruction} [/INST]"这些被截断，故做以下处理：
+        if len(s) + len(t) > max_seq_length:
+            ori_slen = len(s)
+            ori_tlen = len(t)
+            ori_len = ori_slen + ori_tlen
 
-            max_instruction_length = max_input_length - num_tokens_prompt_prefix - num_tokens_prompt_suffix
+            # 分别对input output精细化截取长度
+            if ori_tlen > max_target_length:
+                t = t[:max_target_length]
 
-            # max_instruction_length 第1)种选择：考虑到指令一般会在最前面或者最后面，最大允许超过1000，优先保留前后各500token
-            if max_instruction_length > 1000:
-                start, end = 500, 500
-                s = s[:num_tokens_prompt_prefix + start + (max_instruction_length - 1000)] + \
+            # max_input_length = max_input_length  # 用固定设置的方式
+            max_input_length = max_seq_length - len(t)  # 最大输入长度用动态方式
+
+            if ori_slen > max_input_length:  # 超长了
+                # s = s[:max_input_length]  # 不能简单这样，可能导致"{instruction} [/INST]"这些被截断，故做以下处理：
+
+                # 最大指令长度
+                max_instruction_length = max_input_length - num_tokens_prompt_prefix - num_tokens_prompt_suffix
+                # 截取指令时 选项1: 如果可用>1000则优先保留前后500后在保留前面中间。如果<=1000则直接前后各保留可用的一半
+                start = min(max_instruction_length // 2, 500)
+                end = min(max_instruction_length - start, 500)
+                s = s[:num_tokens_prompt_prefix + start + (max(0, max_instruction_length - (start + end)))] + \
                     s[-num_tokens_prompt_suffix - end:]
-            else:  # 最大不允许1000,则前后对半
-                start = max_instruction_length // 2
-                end = max_instruction_length - start
-                s = s[:num_tokens_prompt_prefix + start] + \
-                    s[-num_tokens_prompt_suffix - end:]
 
-            # # max_instruction_length 第2)种选择：直接保留instruction的前面部分
-            # s = s[:num_tokens_prompt_prefix+max_instruction_length] + \
-            #     s[-num_tokens_prompt_suffix:]
-            # # max_instruction_length 第3)种选择：直接保留instruction的后面部分
-            # s = s[:num_tokens_prompt_prefix] + \
-            #     s[-num_tokens_prompt_suffix-max_instruction_length:]
+                # # 截取指令时 选项2: 直接保留前面部分
+                # s = s[:num_tokens_prompt_prefix+max_instruction_length] + s[-num_tokens_prompt_suffix:]
+                # # 截取指令时 选项3: 直接保留后面部分
+                # s = s[:num_tokens_prompt_prefix] + s[-num_tokens_prompt_suffix-max_instruction_length:]
 
-            assert len(s) <= max_input_length
-            print(f'\nsource length {ori_len} is larger than {max_input_length}, have been truncated to {len(s)}')
+            new_len = len(s) + len(t)
+            # assert len(s) <= max_input_length
+            assert len(s) + len(t) <= max_seq_length
+            print(f'total length {ori_len} is larger than {max_seq_length}, have been truncated to {new_len}',
+                f'where input truncated from {ori_slen} to {len(s)}, output truncated from {ori_tlen} to {len(t)}')
             # print(f'{tokenizer.decode(s)}\n')
+            # print(f'{tokenizer.decode(t)}\n')
             # input()
 
-        input_ids = (s + t)[:max_seq_length]
-        labels = ([IGNORE_INDEX] * len(s) + t)[:max_seq_length]
+        input_ids = (s + t)
+        labels = ([IGNORE_INDEX] * len(s) + t)
         assert len(input_ids) == len(labels)
         all_input_ids.append(input_ids)
         all_labels.append(labels)
@@ -147,8 +164,8 @@ def gen_arrow(files: List, output_dir, merge_arrow_dir='merge_arrow_data'):
             tokenized_dataset = raw_dataset.map(
                 tokenize_function,
                 batched=True,
-                num_proc=None,  # 量太小不需要
-                # num_proc=32,
+                # num_proc=None,  # 量太就不需要
+                num_proc=32,
                 remove_columns=["instruction", "input", "output"],
                 load_from_cache_file=True,
                 keep_in_memory=False,
@@ -191,15 +208,23 @@ if __name__ == '__main__':
     validation_split_percentage = 0.05  # 小数是比例，整数则是测试样本数量
 
     # 指令微调必须分别限制input和target，防止input本身已经达到了max_seq_length导致output被全部截断
+    # 以及input里的指令相关的关键token如[/INST]被截断
+
     # max_seq_length = 2048
     # max_input_length = 1536
     # max_target_length = 512
+
     max_seq_length = 1024
     max_input_length = 768
     max_target_length = 256
+
     max_seq_length = 4096
     max_input_length = 2048
     max_target_length = 2048
+
+    # max_seq_length = 1000000
+    # max_input_length = 500000
+    # max_target_length = 500000
 
     tokenizer_kwargs = {
         "cache_dir": None,
@@ -230,5 +255,5 @@ if __name__ == '__main__':
     single_arrow_data map完成后生成，每个文件单独一份
     merge_arrow_data 将上述所有文件合并 并且train test split.
     """
-    gen_arrow(files, output_dir)
-    # gen_arrow(files, output_dir, merge_arrow_dir=None)
+    # gen_arrow(files, output_dir)
+    gen_arrow(files, output_dir, merge_arrow_dir=None)
