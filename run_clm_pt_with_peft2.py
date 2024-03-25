@@ -148,6 +148,9 @@ def preprocess_logits_for_metrics(logits, labels):
 
 
 def fault_tolerance_data_collator(features: List) -> Dict[str, Any]:
+    # features = [{'input_ids': tensor([33164, 29946,  3788,  ..., 37081, 32428, 61471]),
+    # 'labels': tensor([33164, 29946,  3788,  ..., 37081, 32428, 61471])}]
+    # len(features) = batch_size = 1
     if not isinstance(features[0], Mapping):
         features = [vars(f) for f in features]
     first = features[0]
@@ -549,13 +552,20 @@ def main():
     #             lm_datasets = concatenate_datasets([lm_datasets, processed_dataset["train"]])
     #     lm_datasets = lm_datasets.train_test_split(test_size = data_args.validation_split_percentage)
 
+    '''
+    # datasets的优点是slice时自动slice各个键值。如:
+    ds[0] = {'input_ids': tensor([1, 2, 3,  ..., 4, 5, 6]), 'labels': tensor([9, 8, 7,  ..., 6, 5, 4])}
+    ds[0:2] = {'input_ids': tensor([[1, 2, 3,  ..., 4, 5, 6], [1, 2, 3,  ..., 4, 5, 6]]),
+                'labels': tensor([[9, 8, 7,  ..., 6, 5, 4], [9, 8, 7,  ..., 6, 5, 4]])}
+    '''
+
     if training_args.do_train:
         # train_dataset = lm_datasets['train']
         # my code
         train_dataset = datasets.load_from_disk(data_args.dataset_dir + '/train', keep_in_memory=False)
         # train_dataset = lm_datasets['train']
         logger.info(f'training datasets (train split)-{data_args.dataset_dir} has been loaded from disk')
-        train_dataset.set_format('torch')
+        train_dataset.set_format('torch')  # np.int32的会转化为torch.int64 故不担心model forward时要求的torch.LongTensor
 
         if data_args.max_train_samples is not None:
             max_train_samples = min(len(train_dataset), data_args.max_train_samples)

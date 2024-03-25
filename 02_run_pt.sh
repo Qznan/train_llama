@@ -2,6 +2,9 @@
 # root_path=/disk0/fin_group/zyn
 root_path=.
 
+# export NCCL_DEBUG=INFO  # 打印NCCL信息
+# export NCCL_P2P_DISABLE=0
+
 lr=5e-5  # full_finetuning
 
 pretrained_model=${root_path}/pretrained_models/chinese-alpaca-2-13b
