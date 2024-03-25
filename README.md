@@ -17,12 +17,13 @@
 </p>
 
 ### News置顶
-- 🔥 更新vllm部署脚本（改进：一次部署langchain和openai均可使用）
+- 🔥 指令微调样本长度精细化处理。
+- 🔥 数据处理代码支持按比例采样后整合，支持统计数据tokens等信息。arrow文件大小优化
+- 🔥 支持预训练及指令微调，支持全量参数及lora
+- 🔥 修改vllm部署脚本，整合generate接口(供langchain使用)和openai接口。提供判别式获得下一token概率的调用方式
 
 ### 背景
-由于项目需要，整理出llama模型的微调代码，并发布以备份。代码参考来源是[Chinese-LLaMA-Alpaca-2](https://github.com/ymcui/Chinese-LLaMA-Alpaca-2)，主要是将：微调数据tokenizer为arrow数据的逻辑部分独立出来了，解绑数据准备与微调步骤。修改了部分代码。增加了一些注释
-
-目前只整理lora微调部分。全参微调只需再修改一点逻辑而已，待后续更新。
+个人项目中修改整理的llama模型的预训练以及微调代码，代码参考来源是[Chinese-LLaMA-Alpaca-2](https://github.com/ymcui/Chinese-LLaMA-Alpaca-2)，主要是将：tokenizing training data and save as arrow的这部分逻辑独立出来，以解绑数据准备和训练两个阶段。优化和部分代码，增加注释。
 
 ### 使用说明如下
 ```
