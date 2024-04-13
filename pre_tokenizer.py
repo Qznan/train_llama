@@ -34,11 +34,11 @@ tok_logger = transformers.utils.logging.get_logger("transformers.tokenization_ut
 
 def tokenize_function(examples):
     with CaptureLogger(tok_logger) as cl:
-        output = tokenizer(examples["text"])  # 因为add_eos_token=True,所以将会增加sos和eos即 <s>  </s>给每行句子
+        output = tokenizer(examples["text"], return_attention_mask=False)  # 因为add_eos_token=True,所以将会增加sos和eos即 <s>  </s>给每行句子
 
     # 当tokenizer(batch_sentences, padding=True)时attention_mask才会有1和0
     # 这里都是1.所以可以不要。因为后续model.forward里面默认的attention_mask=None则是都是1。节省了arrow文件一个int8空间
-    # output.pop('attention_mask')
+    # output.pop('attention_mask')  # 直接return_attention_mask=False就行了
 
     # clm input could be much much longer than block_size
     if "Token indices sequence length is longer than the" in cl.out:
