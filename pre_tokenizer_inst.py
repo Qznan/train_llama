@@ -144,6 +144,10 @@ def gen_arrow(files: List, output_dir, merge_arrow_dir='merge_arrow_data'):
     (os.makedirs(d, exist_ok=True) for d in [cache_load_dir, cache_map_dir, arrow_dir])
 
     for idx, file in enumerate(files):
+        if not isinstance(file, list):
+            file = [file, 1]
+        file, weigth = file  # 文件,权重
+
         logger.info(f'loading {file}...')
         file_name = Path(file).stem
         _arrow_dir = os.path.join(arrow_dir, file_name)
@@ -186,7 +190,7 @@ def gen_arrow(files: List, output_dir, merge_arrow_dir='merge_arrow_data'):
             if not lm_datasets.features.type == processed_dataset["train"].features.type:  # 兼容之前的int64labels
                 processed_dataset = processed_dataset.cast(lm_datasets.features.copy())
             assert lm_datasets.features.type == processed_dataset["train"].features.type
-            lm_datasets = concatenate_datasets([lm_datasets, processed_dataset["train"]])
+            lm_datasets = concatenate_datasets([lm_datasets] + [processed_dataset["train"]] * weigth)
 
     if merge_arrow_dir is None:
         logger.info(f'Finish process all files. not merge because merge_arrow_dir is None')
@@ -254,6 +258,7 @@ if __name__ == '__main__':
 
     files = [
         f'{root_path}instr_data/cj_instr.json',
+        # [f'{root_path}instr_data/cj_instr.json', 5],
     ]
     output_dir = 'instr_data/0111'
 
