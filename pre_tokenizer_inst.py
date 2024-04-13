@@ -2,6 +2,7 @@ import logging
 from pathlib import Path
 from typing import *
 import os, argparse, sys
+import numpy as np
 import datasets
 from datasets import load_dataset, concatenate_datasets
 import transformers
@@ -124,7 +125,8 @@ def tokenize_function(examples):
             # input()
 
         input_ids = (s + t)
-        labels = ([IGNORE_INDEX] * len(s) + t)
+        labels = [IGNORE_INDEX] * len(s) + t
+        labels = np.array(labels, dtype='int32')  # 这样出来后的dataset.feature中才可以看到labels也是int32
         assert len(input_ids) == len(labels)
         all_input_ids.append(input_ids)
         all_labels.append(labels)
@@ -164,7 +166,7 @@ def gen_arrow(files: List, output_dir, merge_arrow_dir='merge_arrow_data'):
             tokenized_dataset = raw_dataset.map(
                 tokenize_function,
                 batched=True,
-                # num_proc=None,  # 量太就不需要
+                # num_proc=None,  # 量太小就不需要
                 num_proc=32,
                 remove_columns=["instruction", "input", "output"],
                 load_from_cache_file=True,
@@ -181,6 +183,8 @@ def gen_arrow(files: List, output_dir, merge_arrow_dir='merge_arrow_data'):
         if idx == 0:
             lm_datasets = processed_dataset['train']
         else:
+            if not lm_datasets.features.type == processed_dataset["train"].features.type:  # 兼容之前的int64labels
+                processed_dataset = processed_dataset.cast(lm_datasets.features.copy())
             assert lm_datasets.features.type == processed_dataset["train"].features.type
             lm_datasets = concatenate_datasets([lm_datasets, processed_dataset["train"]])
 
@@ -195,7 +199,7 @@ def gen_arrow(files: List, output_dir, merge_arrow_dir='merge_arrow_data'):
         lm_datasets = lm_datasets.train_test_split(test_size=validation_split_percentage, seed=1234)
         logger.info(f'Finish split train and test. merge output datasets: {lm_datasets}')
 
-    lm_datasets.save_to_disk(merge_arrow_dir, num_proc=1)
+    lm_datasets.save_to_disk(merge_arrow_dir, num_proc=32)
     logger.info(f'Finish saved merge output datasets path: {merge_arrow_dir}')
 
     with open(output_dir + f'/{Path(tokenizer_path).stem}.info', 'w', encoding='U8') as f:
@@ -222,6 +226,11 @@ if __name__ == '__main__':
     max_input_length = 2048
     max_target_length = 2048
 
+    max_seq_length = 4096
+    max_input_length = 3584
+    max_target_length = 512
+
+    # test infinite to stats len
     # max_seq_length = 1000000
     # max_input_length = 500000
     # max_target_length = 500000
