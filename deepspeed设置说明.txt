@@ -1,0 +1,7 @@
+DeepSpeed不同设置速度排行：
+1.zero-stage2 >
+2.zero-stage2 + optimization-offload
+3.zero-stage3
+4.zero-stage3 + op/param-offload
+
+并且一般开启gradient_checkpointing，此时可用提高batch_size来弥补带来的降速，总体是提速了
