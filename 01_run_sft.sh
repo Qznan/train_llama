@@ -2,7 +2,8 @@
 # root_path=/disk0/fin_group/zyn
 root_path=.
 
-lr=3e-5  # full_finetuning
+# export NCCL_DEBUG=INFO  # 打印NCCL信息
+# export NCCL_P2P_DISABLE=0
 
 pretrained_model=${root_path}/pretrained_models/chinese-alpaca-2-13b
 pretrained_model=${root_path}/pretrained_models/llama-2-tiny-testing
@@ -11,6 +12,16 @@ chinese_tokenizer_path=tokenizer_chinese_llama  # chinese-llama原生词表 5w
 
 dataset_dir=${root_path}/instr_data/0111/merge_arrow_data  # 这里修改原代码，指定pre_tokenizer_inst生成的arrow文件目录
 output_dir=${root_path}/saved_models/1218_3gpu_zero2_test
+
+use_lora=False
+
+if [ "$use_lora" = "True" ]; then
+    full_finetuning=False
+    lr=1e-4  # lora
+else
+    full_finetuning=True
+    lr=3e-5 # full_finetuning sft
+fi
 
 BATCH_SIZE="
     --per_device_train_batch_size 1 \
@@ -29,7 +40,6 @@ STRATEGY="
     --eval_steps 100 \
 "
 
-# lr=1e-4  # lora
 lora_trainable="q_proj,v_proj,k_proj,o_proj,gate_proj,down_proj,up_proj"
 modules_to_save="embed_tokens,lm_head"  # 不微调emb和llm_head就在下面命令中注释掉--modules_to_save
 LORA="
@@ -54,13 +64,12 @@ deepspeed_config_file=ds_zero2_no_offload.json
 report_to=none  # 不记录到wandb
 #report_to=wandb  # 记录到wandb run_name即记录的名字
 
-# 加full_finetuning即全量微调
 
 CUDA_VISIBLE_DEVICES=1,2 \
 torchrun --standalone --nnodes 1 --nproc-per-node 2 \
 run_clm_sft_with_peft2.py \
     --deepspeed ${deepspeed_config_file} \
-    --full_finetuning \
+    --full_finetuning ${full_finetuning} \
     --model_name_or_path ${pretrained_model} \
     --tokenizer_name_or_path ${chinese_tokenizer_path} \
     --dataset_dir ${dataset_dir} \
