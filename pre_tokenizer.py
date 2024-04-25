@@ -152,13 +152,14 @@ def gen_arrow(files: List, output_dir, merge_arrow_dir='merge_arrow_data'):
             """ save_to_disk https://huggingface.co/docs/datasets/v2.16.1/en/package_reference/main_classes#datasets.Dataset.save_to_disk """
             processed_dataset.save_to_disk(_arrow_dir)  # 处理好的单个arrow输出目录 e.g.single_arrow_data/test1w_1/
 
-        if idx == 0:
-            lm_datasets = processed_dataset['train']
-        else:
-            if not lm_datasets.features.type == processed_dataset["train"].features.type:  # 兼容之前的int64labels
-                processed_dataset = processed_dataset.cast(lm_datasets.features.copy())
-            assert lm_datasets.features.type == processed_dataset["train"].features.type
-            lm_datasets = concatenate_datasets([lm_datasets] + [processed_dataset["train"]] * weigth)
+        if merge_arrow_dir is not None:
+            if idx == 0:
+                lm_datasets = processed_dataset['train']
+            else:
+                if not lm_datasets.features.type == processed_dataset["train"].features.type:  # 兼容之前的int64labels
+                    processed_dataset = processed_dataset.cast(lm_datasets.features.copy())
+                assert lm_datasets.features.type == processed_dataset["train"].features.type
+                lm_datasets = concatenate_datasets([lm_datasets] + [processed_dataset["train"]] * weigth)
 
     if merge_arrow_dir is None:
         logger.info(f'Finish process all files. not merge because merge_arrow_dir is None')
