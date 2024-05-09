@@ -78,7 +78,6 @@ def gen_arrow(files: List, output_dir, merge_arrow_dir='merge_arrow_data'):
     """
     merge_arrow_dir=None 不进行合并操作
     """
-    lm_datasets = []
     cache_load_dir = os.path.join(output_dir, 'cache_load')  # 存放各个小文件的load即(load_dataset)产生的cache目录
     cache_map_dir = os.path.join(output_dir, 'cache_map')  # 存放各个小文件的map产生的cache目录
     arrow_dir = os.path.join(output_dir, 'single_arrow_data')  # 存放每个处理好的Dataset/DatasetDict的arrow格式文件的目录
@@ -88,7 +87,7 @@ def gen_arrow(files: List, output_dir, merge_arrow_dir='merge_arrow_data'):
     for idx, file in enumerate(files):
         if not isinstance(file, list):
             file = [file, 1, {}]
-        file, weigth, load_kwargs = file  # 文件,权重,加载参数
+        file, weight, load_kwargs = file  # 文件,权重,加载参数
 
         logger.info(f'loading {file}...')
         file_name = Path(file).stem
@@ -152,28 +151,39 @@ def gen_arrow(files: List, output_dir, merge_arrow_dir='merge_arrow_data'):
             """ save_to_disk https://huggingface.co/docs/datasets/v2.16.1/en/package_reference/main_classes#datasets.Dataset.save_to_disk """
             processed_dataset.save_to_disk(_arrow_dir)  # 处理好的单个arrow输出目录 e.g.single_arrow_data/test1w_1/
 
+        processed_dataset = processed_dataset['train']
         if merge_arrow_dir is not None:
+            if idx >= 1:
+                if processed_dataset.features.type != merged_datasets.features.type:  # 为了兼容之前的int64labels
+                    logger.info(f"processed_dataset.features.type != merged_datasets.features.type 转换中...")
+                    processed_dataset = processed_dataset.cast(merged_datasets.features.copy())
+                assert processed_dataset.features.type == merged_datasets.features.type
+
+            if weight < 1:  # 下采样
+                processed_dataset = processed_dataset.train_test_split(test_size=weight, shuffle=True, seed=1234)['test']  # 利用划分训练测试来下采样数据
+                logger.info(f"下采样数据比例:{weight}, 采样结果个数:{len(processed_dataset)}")
+            if weight > 1:  # 上采样
+                logger.info(f"上采样数据倍数:{weight}, 采样结果个数:{len(processed_dataset) * weight}")
+            to_be_concatenate_list = [processed_dataset] * max(1, weight)
+
             if idx == 0:
-                lm_datasets = processed_dataset['train']
+                merged_datasets = concatenate_datasets(to_be_concatenate_list)
             else:
-                if not lm_datasets.features.type == processed_dataset["train"].features.type:  # 兼容之前的int64labels
-                    processed_dataset = processed_dataset.cast(lm_datasets.features.copy())
-                assert lm_datasets.features.type == processed_dataset["train"].features.type
-                lm_datasets = concatenate_datasets([lm_datasets] + [processed_dataset["train"]] * weigth)
+                merged_datasets = concatenate_datasets([merged_datasets] + to_be_concatenate_list)
 
     if merge_arrow_dir is None:
         logger.info(f'Finish process all files. not merge because merge_arrow_dir is None')
         return
 
-    logger.info(f'Finish process all files. merge output datasets: {lm_datasets}')
+    logger.info(f'Finish process all files. merged output datasets: {merged_datasets}')
 
     if validation_split_percentage is not None:
         logger.info(f'split train and test, test ratio or num: {validation_split_percentage} seed=1234')
-        lm_datasets = lm_datasets.train_test_split(test_size=validation_split_percentage, seed=1234)
-        logger.info(f'Finish split train and test. merge output datasets: {lm_datasets}')
+        merged_datasets = merged_datasets.train_test_split(test_size=validation_split_percentage, seed=1234)
+        logger.info(f'Finish split train and test. merged output datasets: {merged_datasets}')
 
-    lm_datasets.save_to_disk(merge_arrow_dir, num_proc=32)  # 存储也需要多线程不然很慢，默认按每个分片shard最大500M自动分片存，个数取分片后数量和线程数最大值
-    logger.info(f'Finish saved merge output datasets path: {merge_arrow_dir}')
+    merged_datasets.save_to_disk(merge_arrow_dir, num_proc=32)  # 存储也需要多线程不然很慢，默认按每个分片shard最大500M自动分片存，个数取分片后数量和线程数最大值
+    logger.info(f'Finish saved merged output datasets path: {merge_arrow_dir}')
 
     with open(output_dir + f'/{Path(tokenizer_path).stem}.info', 'w', encoding='U8') as f:
         f.write(tokenizer_path + '\n')
