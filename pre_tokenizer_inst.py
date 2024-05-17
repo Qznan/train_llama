@@ -183,6 +183,8 @@ def gen_arrow(files: List, output_dir, merge_arrow_dir='merge_arrow_data'):
             processed_dataset.save_to_disk(_arrow_dir)
 
         processed_dataset = processed_dataset['train']
+        print(f'=============original data info\n{file_name}\n{processed_dataset}\nlen:{len(processed_dataset)}\n'
+                f'============\n')
         if merge_arrow_dir is not None:
             if 'attention_mask' in processed_dataset.column_names:  # for compatible
                 processed_dataset = processed_dataset.remove_columns('attention_mask')

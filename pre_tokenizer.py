@@ -152,6 +152,8 @@ def gen_arrow(files: List, output_dir, merge_arrow_dir='merge_arrow_data'):
             processed_dataset.save_to_disk(_arrow_dir)  # 处理好的单个arrow输出目录 e.g.single_arrow_data/test1w_1/
 
         processed_dataset = processed_dataset['train']
+        print(f'=============original data info\n{file_name}\n{processed_dataset}\nlen:{len(processed_dataset)}\n'
+                f'tokens:{len(processed_dataset)*block_size}\n============\n')
         if merge_arrow_dir is not None:
             if idx >= 1:
                 if processed_dataset.features.type != merged_datasets.features.type:  # 为了兼容之前的int64labels
