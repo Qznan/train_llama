@@ -7,7 +7,9 @@
         "hysteresis": 2,
         "min_loss_scale": 1e-10
     },
-
+    "bf16": {
+        "enabled": "auto"
+    },
     "zero_optimization": {
         "stage": 3,
         "allgather_partitions": true,
