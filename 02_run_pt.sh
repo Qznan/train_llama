@@ -57,6 +57,7 @@ unused_params="
     --block_size 1024 \
     --validation_split_percentage 0.1 \
     --validation_file ${validation_file} \
+    --preprocessing_num_workers 8 \
 "
 
 deepspeed_config_file=ds_zero2_no_offload.json
@@ -86,7 +87,6 @@ run_clm_pt_with_peft2.py \
     --warmup_ratio 0.05 \
     --weight_decay 0.01 \
     --gradient_checkpointing \
-    --preprocessing_num_workers 8 \
     $STRATEGY \
     $unused_params \
     $LORA \
@@ -94,7 +94,7 @@ run_clm_pt_with_peft2.py \
     --load_in_kbits 16 \
     --save_safetensors False \
     --ddp_timeout 30000 \
-    --ddp_find_unused_parameters False \
+    --ddp_find_unused_parameters ${full_finetuning} \
     --run_name pt \
     --report_to ${report_to}
 
