@@ -13,6 +13,9 @@ chinese_tokenizer_path=tokenizer_chinese_llama  # chinese-llama原生词表 5w
 dataset_dir=${root_path}/pt_data/0111/merge_arrow_data  # 这里修改原代码，指定pre_tokenizer_inst生成的arrow文件目录
 output_dir=${root_path}/saved_models/pt_test0111_1
 
+mkdir -p ${output_dir}
+output_log_file=${output_dir}/run.log
+
 use_lora=False
 
 if [ "$use_lora" = "True" ]; then
@@ -96,7 +99,8 @@ run_clm_pt_with_peft2.py \
     --ddp_timeout 30000 \
     --ddp_find_unused_parameters ${full_finetuning} \
     --run_name pt \
-    --report_to ${report_to}
+    --report_to ${report_to} \
+    2>&1 | tee -a ${output_log_file}
 
     # --resume_from_checkpoint ${resume_checkpoint}
 # nohup bash 02_run_pt.sh > pt0220.log 2>&1 &

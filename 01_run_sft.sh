@@ -13,6 +13,9 @@ chinese_tokenizer_path=tokenizer_chinese_llama  # chinese-llama原生词表 5w
 dataset_dir=${root_path}/instr_data/0111/merge_arrow_data  # 这里修改原代码，指定pre_tokenizer_inst生成的arrow文件目录
 output_dir=${root_path}/saved_models/1218_3gpu_zero2_test
 
+mkdir -p ${output_dir}
+output_log_file=${output_dir}/run.log
+
 use_lora=False
 
 if [ "$use_lora" = "True" ]; then
@@ -96,7 +99,8 @@ run_clm_sft_with_peft2.py \
     --ddp_timeout 30000 \
     --ddp_find_unused_parameters ${full_finetuning} \
     --run_name sft \
-    --report_to ${report_to}
+    --report_to ${report_to} \
+    2>&1 | tee -a ${output_log_file}
 
     # --resume_from_checkpoint ${resume_checkpoint}
 # nohup bash 01_run_sft.sh > sft0220.log 2>&1 &
