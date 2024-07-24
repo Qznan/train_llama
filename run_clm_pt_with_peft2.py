@@ -389,9 +389,9 @@ def main():
         handlers=[logging.StreamHandler(sys.stdout)],
     )
 
-    if training_args.should_log:
+    if training_args.should_log:  # 结合log_on_each_node参数(默认为True),判断是否为主进程或是否为每个主机的主进程
         # The default of training_args.log_level is passive, so we set log level at info here to have that default.
-        transformers.utils.logging.set_verbosity_info()
+        transformers.utils.logging.set_verbosity_info()  # transformers默认是warning 需设置为info
 
     log_level = training_args.get_process_log_level()
     # 前面设置了transformers logging位INFO
