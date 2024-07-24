@@ -264,6 +264,7 @@ class MyTrainingArguments(TrainingArguments):
     quant_type: Optional[str] = field(default="nf4")
     load_in_kbits: Optional[int] = field(default=16)
     full_finetuning: Optional[bool] = field(default=False)
+    dataloader_num_workers: Optional[int] = field(default=32)
 
 
 logger = logging.getLogger(__name__)
@@ -281,15 +282,22 @@ def main():
     send_example_telemetry("run_clm", model_args, data_args)
 
     # Setup logging
-    logging.basicConfig(format="%(asctime)s - %(levelname)s - %(name)s - %(message)s", datefmt="%m/%d/%Y %H:%M:%S",
-                        level=logging.INFO,  # if training_args.local_rank in [-1, 0] else logging.WARN,
-                        handlers=[logging.StreamHandler(sys.stdout)], )
+    logging.basicConfig(
+        format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
+        datefmt="%m/%d/%Y %H:%M:%S",
+        level=logging.INFO,  # if training_args.local_rank in [-1, 0] else logging.WARN,
+        handlers=[logging.StreamHandler(sys.stdout)],
+    )
 
     if training_args.should_log:
         # The default of training_args.log_level is passive, so we set log level at info here to have that default.
         transformers.utils.logging.set_verbosity_info()
 
     log_level = training_args.get_process_log_level()
+    # 前面设置了transformers logging位INFO
+    # 由于training_args.log_level未设置默认为passive,所以主进程采用transformers logging的设置
+    # 由于training_args.log_level_replica未设置默认为warning,所以附属进程就采用warning
+    # log_level 的值：主进程info 附属进程warning
     logger.setLevel(log_level)
     datasets.utils.logging.set_verbosity(log_level)
     transformers.utils.logging.set_verbosity(log_level)
@@ -357,7 +365,7 @@ def main():
             "You are instantiating a new tokenizer from scratch. This is not supported by this script."
             "You can do it from another script, save it, and load it from here, using --tokenizer_name."
         )
-
+    tokenizer.add_eos_token = False  # 方便保存的模型的tokenizer在之后部署时正确的
     # if (len(tokenizer)) != 55296:
     #     raise ValueError(f"The vocab size of the tokenizer should be 55296, but found {len(tokenizer)}.\n"
     #                      "Please use Chinese-LLaMA-2 tokenizer.")

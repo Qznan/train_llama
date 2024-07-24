@@ -6,6 +6,14 @@ python merge_llama2_with_chinese_lora_low_mem.py \
     --output_type [huggingface|pth|] \
     --output_dir path/to/output-dir
 """
+"""
+python merge_llama2_with_chinese_lora_low_mem.py \
+    --base_model /home/hgd/fin_group/zyn/zyn_data_net/232server/sft/saved_models1/bbb \
+    --lora_model /home/hgd/fin_group/zyn/zyn_data_net/232server/sft/saved_models1/lll \
+    --output_type huggingface \
+    --output_dir /home/hgd/fin_group/zyn/zyn_data_net/232server/sft/saved_models1/ooo \
+    --verbose
+"""
 import argparse
 import json
 import os
@@ -16,6 +24,7 @@ from transformers import LlamaTokenizer
 from transformers.modeling_utils import dtype_byte_size
 from huggingface_hub import snapshot_download
 import re
+import ipdb
 
 parser = argparse.ArgumentParser(description='Script to merge Llama-2-hf with Chinese LLaMA-2 or Alpaca-2 LoRA weights')
 parser.add_argument('--base_model', default=None, required=True,
@@ -241,8 +250,7 @@ if __name__=='__main__':
     lora_state_dict = torch.load(os.path.join(lora_model_path,'adapter_model.bin'),map_location='cpu')
     if 'base_model.model.model.embed_tokens.weight' in lora_state_dict:
         lora_vocab_size = lora_state_dict['base_model.model.model.embed_tokens.weight'].shape[0]
-        assert lora_vocab_size==len(tokenizer), \
-        (f"The vocab size of the tokenizer {len(tokenizer)} does not match the vocab size of the LoRA weight {lora_vocab_size}!\n")
+        # assert lora_vocab_size==len(tokenizer), (f"The vocab size of the tokenizer {len(tokenizer)} does not match the vocab size of the LoRA weight {lora_vocab_size}!\n")  # 不要求一样
     tokenizers_and_loras.append(
         {
             "tokenizer"  :tokenizer,
@@ -251,7 +259,7 @@ if __name__=='__main__':
             "scaling": lora_config.lora_alpha / lora_config.r,
             "fan_in_fan_out" : lora_config.fan_in_fan_out,
         })
-    
+
     if not os.path.exists(base_model_path):
         print("Cannot find lora model on the disk. Downloading lora model from hub...")
         base_model_path = snapshot_download(repo_id=base_model_path)
@@ -276,24 +284,27 @@ if __name__=='__main__':
                 dims_per_head = dim // n_heads
                 base = 10000.0
                 inv_freq = 1.0 / (base ** (torch.arange(0, dims_per_head, 2).float() / dims_per_head))
+
         print("Merging...")
-        for k in state_dict:
+        for k in state_dict:  # base_model的
             for tl_idx, t_and_l in enumerate(tokenizers_and_loras):
+                # 替换module_to_save的lora参数，直接使用lora中的参数
                 saved_key = 'base_model.model.'+k
-                lora_key_A = saved_key.replace('.weight','.lora_A.weight')
                 if saved_key in t_and_l['state_dict']:
                     if args.verbose:
                         print(f"copying {saved_key} from {tl_idx}-th LoRA weight to {k}")
                     state_dict[k] = t_and_l['state_dict'][saved_key].half().clone() # do we need half()?
+
+                # 替换target_module的lora参数，将lora中的参数加到base
+                lora_key_A = saved_key.replace('.weight','.lora_A.weight')
                 if lora_key_A in t_and_l['state_dict']:
                     lora_key_B = lora_key_A.replace('lora_A.weight','lora_B.weight')
                     if args.verbose:
                         print(f"merging {lora_key_A} and lora_B.weight form {tl_idx}-th LoRA weight to {k}")
-                    state_dict[k] += (
-                        transpose(
-                            t_and_l['state_dict'][lora_key_B].float()
-                          @ t_and_l['state_dict'][lora_key_A].float(), t_and_l['fan_in_fan_out']) * t_and_l['scaling']
-                    )
+                    # 原始的是提了精度到float再矩阵运算。跟没提的结果是不一样的
+                    state_dict[k] += (transpose(t_and_l['state_dict'][lora_key_B].float() @ t_and_l['state_dict'][lora_key_A].float(), t_and_l['fan_in_fan_out']) * t_and_l['scaling'])
+                    # state_dict[k] += (transpose(t_and_l['state_dict'][lora_key_B] @ t_and_l['state_dict'][lora_key_A], t_and_l['fan_in_fan_out']) * t_and_l['scaling'])
+                    # ipdb.set_trace()
             weight_size = state_dict[k].numel() * dtype_byte_size(state_dict[k].dtype)
             total_size += weight_size
 
